@@ -36,12 +36,11 @@ def main(args):
 
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
+    from constants import SIM_TASK_CONFIGS
     if is_sim:
-        from constants import SIM_TASK_CONFIGS
         task_config = SIM_TASK_CONFIGS[task_name]
     else:
-        from aloha_scripts.constants import TASK_CONFIGS
-        task_config = TASK_CONFIGS[task_name]
+        task_config = SIM_TASK_CONFIGS[task_name]
     dataset_dir = task_config['dataset_dir']
     num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
@@ -92,7 +91,12 @@ def main(args):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'real_robot': not is_sim,
+        'real_backend': args.get('real_backend', 'mock'),
+        'fairino_robot_ip': args.get('fairino_robot_ip', ''),
+        'camera_source': args.get('camera_source', '0'),
+        'camera_width': args.get('camera_width', 640),
+        'camera_height': args.get('camera_height', 480),
     }
 
     if is_eval:
@@ -107,7 +111,14 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(
+        dataset_dir,
+        num_episodes,
+        camera_names,
+        batch_size_train,
+        batch_size_val,
+        state_dim=state_dim,
+    )
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -167,6 +178,11 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     max_timesteps = config['episode_len']
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
+    real_backend = config.get('real_backend', 'mock')
+    fairino_robot_ip = config.get('fairino_robot_ip', '')
+    camera_source = config.get('camera_source', '0')
+    camera_width = config.get('camera_width', 640)
+    camera_height = config.get('camera_height', 480)
     onscreen_cam = 'angle'
 
     # load policy and stats
@@ -186,9 +202,19 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
 
     # load environment
     if real_robot:
-        from aloha_scripts.robot_utils import move_grippers # requires aloha
-        from aloha_scripts.real_env import make_real_env # requires aloha
-        env = make_real_env(init_node=True)
+        from deploy_runtime.real_env import make_real_env
+        sdk_config = {
+            'fairino_robot_ip': fairino_robot_ip,
+            'camera_source': camera_source,
+            'camera_width': camera_width,
+            'camera_height': camera_height,
+        }
+        env = make_real_env(
+            equipment_model=equipment_model,
+            backend=real_backend,
+            camera_names=camera_names,
+            sdk_config=sdk_config,
+        )
         env_max_reward = 0
     else:
         from sim_env import make_sim_env
@@ -202,27 +228,29 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
-    num_rollouts = 50
+    num_rollouts = 1 if real_robot else 50
     episode_returns = []
     highest_rewards = []
     for rollout_id in range(num_rollouts):
         rollout_id += 0
         ### set task
-        if 'sim_transfer_cube' in task_name:
-            BOX_POSE[0] = sample_box_pose() # used in sim reset
-        elif 'sim_insertion' in task_name:
-            BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
-        elif 'sim_lifting_cube' in task_name:
-            if 'excavator' in equipment_model:
-                BOX_POSE[0] = sample_box_pose_for_excavator()
+        if not real_robot:
+            if 'sim_transfer_cube' in task_name:
+                BOX_POSE[0] = sample_box_pose() # used in sim reset
+            elif 'sim_insertion' in task_name:
+                BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
+            elif 'sim_lifting_cube' in task_name:
+                if 'excavator' in equipment_model:
+                    BOX_POSE[0] = sample_box_pose_for_excavator()
+                else:
+                    BOX_POSE[0] = sample_box_pose()
             else:
-                BOX_POSE[0] = sample_box_pose()
-        else:
-            raise NotImplementedError
+                raise NotImplementedError
         ts = env.reset()
 
         ### onscreen render
-        if onscreen_render:
+        can_render = hasattr(env, '_physics')
+        if onscreen_render and can_render:
             ax = plt.subplot()
             plt_img = ax.imshow(env._physics.render(height=480, width=640, camera_id=onscreen_cam))
             plt.ion()
@@ -230,6 +258,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         ### evaluation loop
         if temporal_agg:
             all_time_actions = torch.zeros([max_timesteps, max_timesteps+num_queries, state_dim]).cuda()
+            all_time_actions_valid = torch.zeros([max_timesteps, max_timesteps+num_queries], dtype=torch.bool).cuda()
 
         qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
         image_list = [] # for visualization
@@ -239,7 +268,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         with torch.inference_mode():
             for t in range(max_timesteps):
                 ### update onscreen render and wait for DT
-                if onscreen_render:
+                if onscreen_render and can_render:
                     image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
                     plt_img.set_data(image)
                     plt.pause(DT)
@@ -262,14 +291,18 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                         all_actions = policy(qpos, curr_image)
                     if temporal_agg:
                         all_time_actions[[t], t:t+num_queries] = all_actions
+                        all_time_actions_valid[[t], t:t+num_queries] = True
                         actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                        actions_populated = all_time_actions_valid[:, t]
                         actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        if actions_for_curr_step.shape[0] == 0:
+                            raw_action = all_actions[:, 0]
+                        else:
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
                     else:
                         raw_action = all_actions[:, t % query_frequency]
                 elif config['policy_class'] == "CNNMLP":
@@ -290,10 +323,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 target_qpos_list.append(target_qpos)
                 rewards.append(ts.reward)
 
-            plt.close()
-        if real_robot:
-            move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
-            pass
+            if onscreen_render and can_render:
+                plt.close()
 
         rewards = np.array(rewards)
         episode_return = np.sum(rewards[rewards!=None])
@@ -452,4 +483,14 @@ if __name__ == '__main__':
     # 设备型号
     parser.add_argument('--equipment_model', action='store', type=str, default='vx300s_bimanual',
                         help='equipment model folder under assets (e.g., vx300s_bimanual)')
+    parser.add_argument('--real_backend', action='store', type=str, default='mock', choices=['mock', 'sdk'],
+                        help='backend for real deployment framework')
+    parser.add_argument('--fairino_robot_ip', action='store', type=str, default='',
+                        help='Fairino robot IP when real_backend=sdk')
+    parser.add_argument('--camera_source', action='store', type=str, default='0',
+                        help='Top camera source index or URL for real deployment')
+    parser.add_argument('--camera_width', action='store', type=int, default=640,
+                        help='Camera width for real deployment')
+    parser.add_argument('--camera_height', action='store', type=int, default=480,
+                        help='Camera height for real deployment')
     main(vars(parser.parse_args()))
