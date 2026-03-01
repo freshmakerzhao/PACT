@@ -72,13 +72,22 @@ def get_args_parser():
 
 def build_ACT_model_and_optimizer(args_override):
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
-    args = parser.parse_args()
+    # ========== 原版 ============
+    # args = parser.parse_args()
+    # ========== 原版 ============
+
+    # ========== 临时改动 ========== 
+    for action in parser._actions:
+        action.required = False
+    args = parser.parse_args([])
+    # ========== 临时改动 ========== 
 
     for k, v in args_override.items():
         setattr(args, k, v)
 
     model = build_ACT_model(args)
-    model.cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
     param_dicts = [
         {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
