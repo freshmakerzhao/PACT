@@ -67,7 +67,7 @@ To visualize the episode after it is collected, run
 
     python3 visualize_episodes.py --dataset_dir <data save dir> --episode_idx 0
 
-To train ACT:
+To train ACT (recommended flags for stable throughput):
     
     # Transfer Cube task
     python3 imitate_episodes.py \
@@ -75,7 +75,41 @@ To train ACT:
     --ckpt_dir <ckpt dir> \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
     --num_epochs 2000  --lr 1e-5 \
-    --seed 0
+    --seed 0 \
+    --num_workers 4 --prefetch_factor 2 --persistent_workers 1 --pin_memory 1
+
+To resume training from a checkpoint, add ``--resume_ckpt`` (and optionally ``--start_epoch`` if you want to override):
+
+    python3 imitate_episodes.py \
+    --task_name sim_transfer_cube_scripted \
+    --ckpt_dir <ckpt dir> \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+    --num_epochs 2000  --lr 1e-5 \
+    --seed 0 \
+    --resume_ckpt <ckpt path> \
+    --num_workers 4 --prefetch_factor 2 --persistent_workers 1 --pin_memory 1
+
+For excavator (4-DoF) experiments, make sure to pass ``--equipment_model excavator_simple`` so the model matches the checkpoint shape:
+
+    python3 imitate_episodes.py \
+    --task_name sim_lifting_cube_scripted \
+    --ckpt_dir <ckpt dir> \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+    --num_epochs 2000  --lr 1e-5 \
+    --seed 0 \
+    --equipment_model excavator_simple \
+    --num_workers 4 --prefetch_factor 2 --persistent_workers 1 --pin_memory 1
+
+    # resume
+    python3 imitate_episodes.py \
+    --task_name sim_lifting_cube_scripted \
+    --ckpt_dir <ckpt dir> \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+    --num_epochs 2000  --lr 1e-5 \
+    --seed 0 \
+    --equipment_model excavator_simple \
+    --resume_ckpt <ckpt path> \
+    --num_workers 4 --prefetch_factor 2 --persistent_workers 1 --pin_memory 1
 
 
 To evaluate the policy, run the same command but add ``--eval``. This loads the best validation checkpoint.

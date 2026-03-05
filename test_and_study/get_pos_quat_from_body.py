@@ -1,8 +1,11 @@
 # 获取xml中指定body的全局位姿
 import mujoco
+from pathlib import Path
 
+# 相对 PACT 根目录的路径
+PACT_DIR = Path(__file__).resolve().parent.parent
 # 加载你的环境模型 (注意替换为你实际的 xml 路径)
-model = mujoco.MjModel.from_xml_path('/home/zhaoshuai/workspace_act/PACT/assets/fairino5_single/single_viperx_ee_transfer_cube.xml')
+model = mujoco.MjModel.from_xml_path(str(PACT_DIR / "assets/fairino5_single/single_viperx_ee_transfer_cube.xml"))
 data = mujoco.MjData(model)
 
 # 前向计算一次，不要给 qpos 赋任何值！保持最原始状态

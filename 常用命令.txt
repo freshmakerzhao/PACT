@@ -4,7 +4,7 @@ python3 record_sim_episodes.py \
 --dataset_dir ./data_sim_episodes/sim_transfer_cube_scripted \
 --num_episodes 50
 
-# 训练
+# 训练（推荐参数）
 python3 imitate_episodes.py \
     --task_name sim_lifting_cube_scripted \
     --ckpt_dir ./ckpts/sim_lifting_cube \
@@ -17,7 +17,32 @@ python3 imitate_episodes.py \
     --num_epochs 2000 \
     --lr 1e-5 \
     --equipment_model vx300s_single \
-    --seed 0
+    --seed 0 \
+    --num_workers 4 \
+    --prefetch_factor 2 \
+    --persistent_workers 1 \
+    --pin_memory 1
+
+# 续训（示例：从指定ckpt继续）
+python3 imitate_episodes.py \
+    --task_name sim_lifting_cube_scripted \
+    --ckpt_dir ./ckpts/sim_lifting_cube \
+    --policy_class ACT \
+    --kl_weight 10 \
+    --chunk_size 100 \
+    --hidden_dim 512 \
+    --batch_size 8 \
+    --dim_feedforward 3200 \
+    --num_epochs 2000 \
+    --lr 1e-5 \
+    --equipment_model vx300s_single \
+    --seed 0 \
+    --resume_ckpt ./ckpts/sim_lifting_cube/policy_latest.ckpt \
+    --start_epoch 1001 \
+    --num_workers 4 \
+    --prefetch_factor 2 \
+    --persistent_workers 1 \
+    --pin_memory 1
 
 # eval
 python3 imitate_episodes.py \
@@ -33,4 +58,59 @@ python3 imitate_episodes.py \
     --lr 1e-5 \
     --seed 0 \
     --equipment_model vx300s_single \
+    --eval
+
+# 训练（挖掘机 excavator_simple）
+python3 imitate_episodes.py \
+    --task_name sim_lifting_cube_scripted \
+    --ckpt_dir ./ckpts/excavator_act_v1 \
+    --policy_class ACT \
+    --kl_weight 10 \
+    --chunk_size 100 \
+    --hidden_dim 512 \
+    --batch_size 8 \
+    --dim_feedforward 3200 \
+    --num_epochs 2000 \
+    --lr 1e-5 \
+    --seed 0 \
+    --equipment_model excavator_simple \
+    --num_workers 4 \
+    --prefetch_factor 2 \
+    --persistent_workers 1 \
+    --pin_memory 1
+
+# 续训（挖掘机 excavator_simple）
+python3 imitate_episodes.py \
+    --task_name sim_lifting_cube_scripted \
+    --ckpt_dir ./ckpts/excavator_act_v1 \
+    --policy_class ACT \
+    --kl_weight 10 \
+    --chunk_size 100 \
+    --hidden_dim 512 \
+    --batch_size 8 \
+    --dim_feedforward 3200 \
+    --num_epochs 2000 \
+    --lr 1e-5 \
+    --seed 0 \
+    --equipment_model excavator_simple \
+    --resume_ckpt ./ckpts/excavator_act_v1/policy_latest.ckpt \
+    --num_workers 4 \
+    --prefetch_factor 2 \
+    --persistent_workers 1 \
+    --pin_memory 1
+
+# eval（挖掘机 excavator_simple）
+python3 imitate_episodes.py \
+    --task_name sim_lifting_cube_scripted \
+    --ckpt_dir ./ckpts/excavator_act_v1 \
+    --policy_class ACT \
+    --kl_weight 10 \
+    --chunk_size 100 \
+    --hidden_dim 512 \
+    --batch_size 8 \
+    --dim_feedforward 3200 \
+    --num_epochs 2000 \
+    --lr 1e-5 \
+    --seed 0 \
+    --equipment_model excavator_simple \
     --eval

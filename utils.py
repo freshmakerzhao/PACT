@@ -76,17 +76,25 @@ class EpisodicDataset(torch.utils.data.Dataset):
         return image_data, qpos_data, action_data, is_pad
 
 
-def get_norm_stats(dataset_dir, num_episodes):
+def get_norm_stats(dataset_dir, num_episodes, episode_ids=None):
     all_qpos_data = []
     all_action_data = []
-    for episode_idx in range(num_episodes):
+    if episode_ids is None:
+        episode_ids = range(num_episodes)
+    for episode_idx in episode_ids:
         dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
+        if not os.path.exists(dataset_path):
+            continue
         with h5py.File(dataset_path, 'r') as root:
             qpos = root['/observations/qpos'][()]
             qvel = root['/observations/qvel'][()]
             action = root['/action'][()]
         all_qpos_data.append(torch.from_numpy(qpos))
         all_action_data.append(torch.from_numpy(action))
+    if len(all_qpos_data) == 0:
+        raise FileNotFoundError(
+            f"No episodes found under {dataset_dir}. Expected files like episode_0.hdf5."
+        )
     all_qpos_data = torch.stack(all_qpos_data)
     all_action_data = torch.stack(all_action_data)
     all_action_data = all_action_data
@@ -110,14 +118,26 @@ def get_norm_stats(dataset_dir, num_episodes):
 
 def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
     print(f'\nData from: {dataset_dir}\n')
+    # Only use episodes that actually exist on disk.
+    available_episode_ids = []
+    for episode_idx in range(num_episodes):
+        dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
+        if os.path.exists(dataset_path):
+            available_episode_ids.append(episode_idx)
+    if len(available_episode_ids) == 0:
+        raise FileNotFoundError(
+            f"No episodes found under {dataset_dir}. Expected files like episode_0.hdf5."
+        )
+    if len(available_episode_ids) < num_episodes:
+        print(f'Warning: requested {num_episodes} episodes but found {len(available_episode_ids)}. Using available episodes.')
     # obtain train test split
     train_ratio = 0.8
-    shuffled_indices = np.random.permutation(num_episodes)
-    train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
-    val_indices = shuffled_indices[int(train_ratio * num_episodes):]
+    shuffled_indices = np.random.permutation(available_episode_ids)
+    train_indices = shuffled_indices[:int(train_ratio * len(available_episode_ids))]
+    val_indices = shuffled_indices[int(train_ratio * len(available_episode_ids)):]
 
     # obtain normalization stats for qpos and action
-    norm_stats = get_norm_stats(dataset_dir, num_episodes)
+    norm_stats = get_norm_stats(dataset_dir, num_episodes, episode_ids=available_episode_ids)
 
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)

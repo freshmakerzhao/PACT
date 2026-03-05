@@ -1,8 +1,11 @@
 # 获取xml中指定site的全局位姿
 import mujoco
 import numpy as np
+from pathlib import Path
 
-model = mujoco.MjModel.from_xml_path('/home/zhaoshuai/workspace_act/PACT/assets/fairino5_single/single_viperx_ee_transfer_cube.xml')
+# 相对 PACT 根目录的路径
+PACT_DIR = Path(__file__).resolve().parent.parent
+model = mujoco.MjModel.from_xml_path(str(PACT_DIR / "assets/fairino5_single/single_viperx_ee_transfer_cube.xml"))
 data = mujoco.MjData(model)
 mujoco.mj_forward(model, data)
 

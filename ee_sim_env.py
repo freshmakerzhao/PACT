@@ -1,4 +1,4 @@
-from curses.ascii import ctrl
+#from curses.ascii import ctrl
 import numpy as np
 import collections
 import os

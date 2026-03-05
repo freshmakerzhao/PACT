@@ -1,0 +1,173 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        // ================================= excavator_simple =================================
+        {
+            // 生成轨迹数据
+            "name": "[excavator] lifting_cube_scripted record_sim_episodes",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/record_sim_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--dataset_dir", "./data_sim_episodes/excavator_simple/sim_lifting_cube_scripted_260226",
+                "--num_episodes", "1",
+                "--equipment_model", "excavator_simple",
+                "--onscreen_render"
+            ],
+        },
+        {
+            // 可视化轨迹数据
+            "name": "[excavator] lifting_cube_scripted visualize_episodes",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/visualize_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--dataset_dir", "./data_sim_episodes/excavator_simple/sim_lifting_cube_scripted_260226",
+                "--episode_idx", "0"
+            ],
+        },
+        {
+            // 训练模型
+            "name": "[excavator] lifting_cube_scripted train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/imitate_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--ckpt_dir", "./ckpts/sim_lifting_cube_scripted",
+                "--policy_class", "ACT",
+                "--kl_weight", "10",
+                "--chunk_size", "100",
+                "--hidden_dim", "512",
+                "--batch_size", "8",
+                "--dim_feedforward", "3200",
+                "--num_epochs", "2000",
+                "--lr", "1e-5",
+                "--seed", "0",
+                "--equipment_model", "excavator_simple",
+            ],
+        },
+        {
+            // 验证模型
+            "name": "[excavator] lifting_cube_scripted eval",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/imitate_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--ckpt_dir", "./ckpts/sim_lifting_cube_scripted",
+                "--policy_class", "ACT",
+                "--kl_weight", "10",
+                "--chunk_size", "100",
+                "--hidden_dim", "512",
+                "--batch_size", "8",
+                "--dim_feedforward", "3200",
+                "--num_epochs", "2000",
+                "--lr", "1e-5",
+                "--seed", "0",
+                "--equipment_model", "excavator_simple",
+                "--eval"
+            ],
+        },
+        // ================================= excavator_simple =================================
+        // ================================= fairino5_single =================================
+        {
+            // 生成轨迹数据
+            "name": "[firino] lifting_cube_scripted record_sim_episodes",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/record_sim_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--dataset_dir", "./data_sim_episodes/fairino5_single/sim_lifting_cube_scripted_260226",
+                "--num_episodes", "1",
+                "--equipment_model", "fairino5_single",
+                "--onscreen_render"
+            ],
+        },
+        {
+            // 可视化轨迹数据
+            "name": "[firino] lifting_cube_scripted visualize_episodes",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/visualize_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--dataset_dir", "./data_sim_episodes/fairino5_single/sim_lifting_cube_scripted",
+                "--episode_idx", "0"
+            ],
+        },
+        {
+            // 训练模型
+            "name": "[firino] lifting_cube_scripted train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/imitate_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--ckpt_dir", "./ckpts/sim_lifting_cube_scripted",
+                "--policy_class", "ACT",
+                "--kl_weight", "10",
+                "--chunk_size", "100",
+                "--hidden_dim", "512",
+                "--batch_size", "8",
+                "--dim_feedforward", "3200",
+                "--num_epochs", "2000",
+                "--lr", "1e-5",
+                "--seed", "0",
+                "--equipment_model", "fairino5_single",
+            ],
+        },
+        {
+            "name": "[firino] lifting_cube_scripted",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/record_sim_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--dataset_dir", "./data_sim_episodes/sim_lifting_cube_scripted",
+                "--num_episodes", "1",
+                "--equipment_model", "fairino5_single",
+                "--onscreen_render"
+            ],
+        },
+        // ================================= fairino5_single =================================
+        // ================================= vx300s_single =================================
+        {
+            // 生成轨迹数据
+            "name": "[vx300s_single] lifting_cube_scripted record_sim_episodes",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/record_sim_episodes.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task_name", "sim_lifting_cube_scripted",
+                "--dataset_dir", "./data_sim_episodes/vx300s_single/sim_lifting_cube_scripted_260226",
+                "--num_episodes", "1",
+                "--equipment_model", "vx300s_single",
+                "--onscreen_render"
+            ],
+        },
+        {
+            // debug scripted policy
+            "name": "[other] lifting_cube_scripted scripted policy debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripted_policy.py",
+            "console": "integratedTerminal",
+            "args": [
+            ],
+        },
+    ]
+}

@@ -3,6 +3,7 @@ import numpy as np
 import os
 import pickle
 import argparse
+import re
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
@@ -20,6 +21,33 @@ from sim_env import BOX_POSE
 
 import IPython
 e = IPython.embed
+
+def extract_model_state_dict(ckpt_obj):
+    if isinstance(ckpt_obj, dict) and 'model_state_dict' in ckpt_obj:
+        return ckpt_obj['model_state_dict']
+    if isinstance(ckpt_obj, dict):
+        return ckpt_obj
+    raise ValueError('Unsupported checkpoint format.')
+
+def infer_start_epoch_from_ckpt_path(ckpt_path):
+    ckpt_name = os.path.basename(ckpt_path)
+    match = re.search(r'policy_epoch_(\d+)', ckpt_name)
+    if match is None:
+        return 0
+    return int(match.group(1)) + 1
+
+def build_training_checkpoint(policy, optimizer, epoch, min_val_loss, config):
+    return {
+        'model_state_dict': policy.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'epoch': epoch,
+        'min_val_loss': float(min_val_loss),
+        'config': {
+            'task_name': config['task_name'],
+            'seed': config['seed'],
+            'policy_class': config['policy_class']
+        }
+    }
 
 def main(args):
     set_seed(1)
@@ -72,10 +100,12 @@ def main(args):
                          'dec_layers': dec_layers,
                          'nheads': nheads,
                          'camera_names': camera_names,
+                         'equipment_model': equipment_model,
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
-                         'camera_names': camera_names,}
+                         'camera_names': camera_names,
+                         'equipment_model': equipment_model,}
     else:
         raise NotImplementedError
 
@@ -107,7 +137,17 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(
+        dataset_dir,
+        num_episodes,
+        camera_names,
+        batch_size_train,
+        batch_size_val,
+        num_workers=args['num_workers'],
+        prefetch_factor=args['prefetch_factor'],
+        persistent_workers=bool(args['persistent_workers']),
+        pin_memory=bool(args['pin_memory'])
+    )
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -116,11 +156,11 @@ def main(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config, args)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
-    ckpt_path = os.path.join(ckpt_dir, f'policy_best.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     torch.save(best_state_dict, ckpt_path)
     print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
@@ -172,7 +212,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
     policy = make_policy(policy_class, policy_config)
-    loading_status = policy.load_state_dict(torch.load(ckpt_path))
+    ckpt_obj = torch.load(ckpt_path, map_location='cpu')
+    loading_status = policy.load_state_dict(extract_model_state_dict(ckpt_obj))
     print(loading_status)
     policy.cuda()
     policy.eval()
@@ -336,7 +377,7 @@ def forward_pass(data, policy):
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
 
-def train_bc(train_dataloader, val_dataloader, config):
+def train_bc(train_dataloader, val_dataloader, config, args):
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
@@ -353,7 +394,29 @@ def train_bc(train_dataloader, val_dataloader, config):
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
-    for epoch in tqdm(range(num_epochs)):
+    start_epoch = 0
+    resume_ckpt = args.get('resume_ckpt')
+    if resume_ckpt:
+        ckpt_obj = torch.load(resume_ckpt, map_location='cpu')
+        loading_status = policy.load_state_dict(extract_model_state_dict(ckpt_obj))
+        print(f'Resumed model from: {resume_ckpt}')
+        print(loading_status)
+
+        if isinstance(ckpt_obj, dict) and 'optimizer_state_dict' in ckpt_obj:
+            optimizer.load_state_dict(ckpt_obj['optimizer_state_dict'])
+            print('Optimizer state resumed from checkpoint.')
+
+        if args.get('start_epoch') is not None:
+            start_epoch = args['start_epoch']
+        elif isinstance(ckpt_obj, dict) and 'epoch' in ckpt_obj:
+            start_epoch = int(ckpt_obj['epoch']) + 1
+        else:
+            start_epoch = infer_start_epoch_from_ckpt_path(resume_ckpt)
+
+        if isinstance(ckpt_obj, dict) and 'min_val_loss' in ckpt_obj:
+            min_val_loss = float(ckpt_obj['min_val_loss'])
+
+    for epoch in tqdm(range(start_epoch, num_epochs)):
         print(f'\nEpoch {epoch}')
         # validation
         with torch.inference_mode():
@@ -378,6 +441,7 @@ def train_bc(train_dataloader, val_dataloader, config):
         # training
         policy.train()
         optimizer.zero_grad()
+        batch_idx = -1
         for batch_idx, data in enumerate(train_dataloader):
             forward_dict = forward_pass(data, policy)
             # backward
@@ -386,7 +450,9 @@ def train_bc(train_dataloader, val_dataloader, config):
             optimizer.step()
             optimizer.zero_grad()
             train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
+        if batch_idx < 0:
+            raise ValueError('Train dataloader yielded 0 batches. Please check dataset split and paths.')
+        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*(epoch - start_epoch):(batch_idx+1)*(epoch - start_epoch + 1)])
         epoch_train_loss = epoch_summary['loss']
         print(f'Train loss: {epoch_train_loss:.5f}')
         summary_string = ''
@@ -396,15 +462,31 @@ def train_bc(train_dataloader, val_dataloader, config):
 
         if epoch % 100 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-            torch.save(policy.state_dict(), ckpt_path)
+            torch.save(build_training_checkpoint(policy, optimizer, epoch, min_val_loss, config), ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
-    ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-    torch.save(policy.state_dict(), ckpt_path)
+        latest_ckpt_path = os.path.join(ckpt_dir, 'policy_latest.ckpt')
+        torch.save(build_training_checkpoint(policy, optimizer, epoch, min_val_loss, config), latest_ckpt_path)
+
+    ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
+    torch.save(build_training_checkpoint(policy, optimizer, epoch, min_val_loss, config), ckpt_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
     ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
-    torch.save(best_state_dict, ckpt_path)
+    torch.save(
+        {
+            'model_state_dict': best_state_dict,
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': best_epoch,
+            'min_val_loss': float(min_val_loss),
+            'config': {
+                'task_name': config['task_name'],
+                'seed': config['seed'],
+                'policy_class': config['policy_class']
+            }
+        },
+        ckpt_path
+    )
     print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
 
     # save training curves
@@ -441,6 +523,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument('--resume_ckpt', action='store', type=str, default=None, help='checkpoint path for resume')
+    parser.add_argument('--start_epoch', action='store', type=int, default=None, help='override start epoch when resuming')
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
@@ -448,6 +532,10 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
+    parser.add_argument('--num_workers', action='store', type=int, default=4, help='dataloader workers')
+    parser.add_argument('--prefetch_factor', action='store', type=int, default=2, help='dataloader prefetch factor')
+    parser.add_argument('--persistent_workers', action='store', type=int, default=1, help='1 to keep workers persistent')
+    parser.add_argument('--pin_memory', action='store', type=int, default=1, help='1 to enable pin memory')
 
     # 设备型号
     parser.add_argument('--equipment_model', action='store', type=str, default='vx300s_bimanual',

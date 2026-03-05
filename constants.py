@@ -1,33 +1,38 @@
+import os
 import pathlib
 import numpy as np
 
 ### Task parameters
-DATA_DIR = '/home/zhaoshuai/workspace_act/PACT/data_sim_episodes/fairino5_single_26022801' # absolute path
+_REPO_DIR = pathlib.Path(__file__).resolve().parent
+# Default to a repo-local data directory on Windows/Linux.
+# You can override with env var PACT_DATA_DIR, e.g.:
+#   $env:PACT_DATA_DIR="D:\data\pact"
+DATA_DIR = pathlib.Path(os.environ.get("PACT_DATA_DIR", str(_REPO_DIR / "data_sim_episodes"))).resolve()
 SIM_TASK_CONFIGS = {
     # vx300s_bimanual搬方块任务
     'sim_transfer_cube_scripted':{
-        'dataset_dir': DATA_DIR + '/sim_transfer_cube_scripted',
+        'dataset_dir': str(DATA_DIR / 'sim_transfer_cube_scripted'),
         'num_episodes': 50,
         'episode_len': 400,
         'camera_names': ['top']
     },
 
     'sim_transfer_cube_human':{
-        'dataset_dir': DATA_DIR + '/sim_transfer_cube_human',
+        'dataset_dir': str(DATA_DIR / 'sim_transfer_cube_human'),
         'num_episodes': 50,
         'episode_len': 400,
         'camera_names': ['top']
     },
 
     'sim_insertion_scripted': {
-        'dataset_dir': DATA_DIR + '/sim_insertion_scripted',
+        'dataset_dir': str(DATA_DIR / 'sim_insertion_scripted'),
         'num_episodes': 50,
         'episode_len': 400,
         'camera_names': ['top']
     },
 
     'sim_insertion_human': {
-        'dataset_dir': DATA_DIR + '/sim_insertion_human',
+        'dataset_dir': str(DATA_DIR / 'sim_insertion_human'),
         'num_episodes': 50,
         'episode_len': 500,
         'camera_names': ['top']
@@ -35,7 +40,7 @@ SIM_TASK_CONFIGS = {
 
     # 单臂搬方块任务
     'sim_lifting_cube_scripted':{
-        'dataset_dir': DATA_DIR + '/sim_lifting_cube_scripted',
+        'dataset_dir': str(DATA_DIR / 'sim_lifting_cube_scripted'),
         'num_episodes': 50,
         'episode_len': 400,
         'camera_names': ['top']
@@ -61,7 +66,7 @@ EXCAVATOR_MAIN_JOINTS = ('j1_swing', 'j2_boom', 'j3_stick', 'j4_bucket')
 EXCAVATOR_START_POSE = np.array([0.0, -0.25, -0.5, -0.5])
 # ========================= 挖掘机 ==================================
 
-XML_DIR = str(pathlib.Path(__file__).parent.resolve()) + '/assets/' # note: absolute path
+XML_DIR = str((_REPO_DIR / 'assets').resolve()) # note: absolute path
 
 # 夹爪开合距离，master是操作者，puppet是搖操的或仿真中的夹爪
 # Left finger position limits (qpos[7]), right_finger = -1 * left_finger
