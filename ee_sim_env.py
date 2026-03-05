@@ -1,4 +1,6 @@
-#from curses.ascii import ctrl
+import sys
+if sys.platform == 'linux':
+    from curses.ascii import ctrl
 import numpy as np
 import collections
 import os
