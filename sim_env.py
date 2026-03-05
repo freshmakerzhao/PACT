@@ -334,7 +334,10 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         super().__init__(random=random)
         self.max_reward = 4
         self.equipment_model = equipment_model
-        self._touched_box = False # 铲斗是否碰触过box
+        self._touched_box = False
+        self._loaded_box = False
+        self._reached_dump_zone = False
+        self._dumped_box = False
 
     def before_step(self, action, physics):
         if len(action) != len(EXCAVATOR_MAIN_JOINTS):
@@ -342,7 +345,10 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         np.copyto(physics.data.ctrl, action)
 
     def initialize_episode(self, physics):
-        self._touched_box = False # 铲斗是否碰触过box
+        self._touched_box = False
+        self._loaded_box = False
+        self._reached_dump_zone = False
+        self._dumped_box = False
         with physics.reset_context():
             for joint_name, joint_value in zip(EXCAVATOR_MAIN_JOINTS, EXCAVATOR_START_POSE):
                 physics.named.data.qpos[joint_name] = joint_value
@@ -385,30 +391,55 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         return obs
 
     def get_reward(self, physics):
-        all_contact_pairs = []
+        all_contact_pairs = set()
         for i_contact in range(physics.data.ncon):
             id_geom_1 = physics.data.contact[i_contact].geom1
             id_geom_2 = physics.data.contact[i_contact].geom2
             name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
             name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            contact_pair = (name_geom_1, name_geom_2)
-            all_contact_pairs.append(contact_pair)
+            all_contact_pairs.add((name_geom_1, name_geom_2))
+            all_contact_pairs.add((name_geom_2, name_geom_1))
 
         box_geom = "red_box"
         bucket_geom = "excavator_bucket"
         tray_geom = "yellow_dump_tray"
 
-        touch_bucket_box = (box_geom, bucket_geom) in all_contact_pairs or (bucket_geom, box_geom) in all_contact_pairs
-        touch_bucket_tray = (bucket_geom, tray_geom) in all_contact_pairs or (tray_geom, bucket_geom) in all_contact_pairs
+        touch_bucket_box = (bucket_geom, box_geom) in all_contact_pairs
+        touch_box_tray = (box_geom, tray_geom) in all_contact_pairs
+        touch_bucket_tray = (bucket_geom, tray_geom) in all_contact_pairs
 
-        reward = 0
+        box_state = self.get_env_state(physics)
+        _, box_y, box_z = box_state[:3]
+        swing_q = float(physics.named.data.qpos['j1_swing'])
+
+        reward = 0.0
         if touch_bucket_box:
             self._touched_box = True
-            reward = 1
-        if self._touched_box and not touch_bucket_box:
-            reward = 2
-        if touch_bucket_tray:
-            reward = 4
+            reward = max(reward, 1.0)
+
+        # 载荷抬升判定：接触过目标后，方块高度显著抬升
+        if self._touched_box and box_z > 0.285:
+            self._loaded_box = True
+            reward = max(reward, 2.0)
+
+        # 卸料区判定：回转角进入卸料侧
+        if self._loaded_box and abs(swing_q) > 1.0:
+            self._reached_dump_zone = True
+            reward = max(reward, 2.8)
+
+        # 卸料动作到位：载荷后铲斗抵达卸料托盘区域
+        if self._reached_dump_zone and touch_bucket_tray:
+            reward = max(reward, 3.0)
+
+        # 卸料完成判定：方块进入托盘且与铲斗分离
+        if self._reached_dump_zone and touch_box_tray and (not touch_bucket_box) and box_z < 0.35:
+            self._dumped_box = True
+            reward = max(reward, 4.0)
+
+        # 对“只碰触未装载”的轨迹给低奖励，避免策略学成推箱子
+        if self._touched_box and (not self._loaded_box):
+            reward = max(reward, 1.2)
+
         return reward
 
 # for test

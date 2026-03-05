@@ -349,12 +349,18 @@ class ExcavatorSimpleLiftingCubeEETask(BimanualViperXEETask):
     def __init__(self, random=None, arm_nums=1, equipment_model='vx300s_single'):
         super().__init__(random=random, arm_nums=arm_nums, equipment_model=equipment_model)
         self.max_reward = 4
-        self._touched_box = False # 铲斗是否碰触过box
+        self._touched_box = False
+        self._loaded_box = False
+        self._reached_dump_zone = False
+        self._dumped_box = False
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
         self.initialize_robots(physics)
         self._touched_box = False
+        self._loaded_box = False
+        self._reached_dump_zone = False
+        self._dumped_box = False
         # randomize box position
         cube_pose = sample_box_pose_for_excavator()
         box_start_idx = physics.model.name2id('red_box_joint', 'joint') # 根据名字找到box的索引
@@ -372,39 +378,50 @@ class ExcavatorSimpleLiftingCubeEETask(BimanualViperXEETask):
         return env_state
 
     def get_reward(self, physics):
-        # return whether left gripper is holding the box
-        all_contact_pairs = []
-        # physics.data.ncon 获取当前ts的接触数量，遍历每一个接触对，拿到存在接触的geom名称
+        all_contact_pairs = set()
         for i_contact in range(physics.data.ncon):
-            # i_contact为一个接触对对应的id，通过id拿到两个相互接触的geom id
             id_geom_1 = physics.data.contact[i_contact].geom1
             id_geom_2 = physics.data.contact[i_contact].geom2
             name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
             name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            # === debug ====
-            # if name_geom_1 == "red_box" or name_geom_2 == "red_box":
-            #     print(f"contact pair: {name_geom_1}, {name_geom_2}")
-            # if name_geom_1 == "yellow_tray" or name_geom_2 == "yellow_tray":
-            #     print(f"contact pair: {name_geom_1}, {name_geom_2}")
-            # === debug ====
-            contact_pair = (name_geom_1, name_geom_2)
-            all_contact_pairs.append(contact_pair)
+            all_contact_pairs.add((name_geom_1, name_geom_2))
+            all_contact_pairs.add((name_geom_2, name_geom_1))
 
         box_geom = "red_box"
         bucket_geom = "excavator_bucket"
         tray_geom = "yellow_dump_tray"
 
-        touch_bucket_box = (box_geom, bucket_geom) in all_contact_pairs or (bucket_geom, box_geom) in all_contact_pairs
-        touch_bucket_tray = (bucket_geom, tray_geom) in all_contact_pairs or (tray_geom, bucket_geom) in all_contact_pairs
+        touch_bucket_box = (bucket_geom, box_geom) in all_contact_pairs
+        touch_box_tray = (box_geom, tray_geom) in all_contact_pairs
+        touch_bucket_tray = (bucket_geom, tray_geom) in all_contact_pairs
 
-        reward = 0
+        box_state = self.get_env_state(physics)
+        _, box_y, box_z = box_state[:3]
+        swing_q = float(physics.named.data.qpos['j1_swing'])
+
+        reward = 0.0
         if touch_bucket_box:
             self._touched_box = True
-            reward = 1
-        if self._touched_box and not touch_bucket_box:
-            reward = 2
-        if touch_bucket_tray:
-            reward = 4
+            reward = max(reward, 1.0)
+
+        if self._touched_box and box_z > 0.285:
+            self._loaded_box = True
+            reward = max(reward, 2.0)
+
+        if self._loaded_box and abs(swing_q) > 1.0:
+            self._reached_dump_zone = True
+            reward = max(reward, 2.8)
+
+        if self._reached_dump_zone and touch_bucket_tray:
+            reward = max(reward, 3.0)
+
+        if self._reached_dump_zone and touch_box_tray and (not touch_bucket_box) and box_z < 0.35:
+            self._dumped_box = True
+            reward = max(reward, 4.0)
+
+        if self._touched_box and (not self._loaded_box):
+            reward = max(reward, 1.2)
+
         return reward
 
 class LiftingCubeEETask(BimanualViperXEETask):

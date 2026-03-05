@@ -17,7 +17,7 @@ from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
-from sim_env import BOX_POSE
+from sim_backend import make_sim_backend
 
 import IPython
 e = IPython.embed
@@ -232,9 +232,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         env = make_real_env(init_node=True)
         env_max_reward = 0
     else:
-        from sim_env import make_sim_env
-        env = make_sim_env(task_name, equipment_model)
-        env_max_reward = env.task.max_reward
+        backend = make_sim_backend(task_name, equipment_model=equipment_model, backend='mujoco')
+        env_max_reward = backend.max_reward
 
     query_frequency = policy_config['num_queries']
     if temporal_agg:
@@ -250,22 +249,27 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         rollout_id += 0
         ### set task
         if 'sim_transfer_cube' in task_name:
-            BOX_POSE[0] = sample_box_pose() # used in sim reset
+            object_pose = sample_box_pose()
         elif 'sim_insertion' in task_name:
-            BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
+            object_pose = np.concatenate(sample_insertion_pose())
         elif 'sim_lifting_cube' in task_name:
             if 'excavator' in equipment_model:
-                BOX_POSE[0] = sample_box_pose_for_excavator()
+                object_pose = sample_box_pose_for_excavator()
             else:
-                BOX_POSE[0] = sample_box_pose()
+                object_pose = sample_box_pose()
         else:
             raise NotImplementedError
-        ts = env.reset()
+        if not real_robot:
+            backend.set_initial_object_pose(object_pose)
+            ts = backend.reset()
+        else:
+            ts = env.reset()
 
         ### onscreen render
         if onscreen_render:
             ax = plt.subplot()
-            plt_img = ax.imshow(env._physics.render(height=480, width=640, camera_id=onscreen_cam))
+            first_image = backend.render(height=480, width=640, camera_id=onscreen_cam) if not real_robot else ts.observation['image']
+            plt_img = ax.imshow(first_image)
             plt.ion()
 
         ### evaluation loop
@@ -281,7 +285,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
             for t in range(max_timesteps):
                 ### update onscreen render and wait for DT
                 if onscreen_render:
-                    image = env._physics.render(height=480, width=640, camera_id=onscreen_cam)
+                    image = backend.render(height=480, width=640, camera_id=onscreen_cam) if not real_robot else ts.observation['image']
                     plt_img.set_data(image)
                     plt.pause(DT)
 
@@ -324,7 +328,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 target_qpos = action
 
                 ### step the environment
-                ts = env.step(target_qpos)
+                ts = env.step(target_qpos) if real_robot else backend.step(target_qpos)
 
                 ### for visualization
                 qpos_list.append(qpos_numpy)

@@ -116,7 +116,17 @@ def get_norm_stats(dataset_dir, num_episodes, episode_ids=None):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(
+    dataset_dir,
+    num_episodes,
+    camera_names,
+    batch_size_train,
+    batch_size_val,
+    num_workers=1,
+    prefetch_factor=1,
+    persistent_workers=False,
+    pin_memory=True,
+):
     print(f'\nData from: {dataset_dir}\n')
     # Only use episodes that actually exist on disk.
     available_episode_ids = []
@@ -142,8 +152,26 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
     val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
+    loader_kwargs = {
+        "pin_memory": pin_memory,
+        "num_workers": num_workers,
+        "persistent_workers": bool(persistent_workers and num_workers > 0),
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size_train,
+        shuffle=True,
+        **loader_kwargs,
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size_val,
+        shuffle=True,
+        **loader_kwargs,
+    )
 
     return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
 

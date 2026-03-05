@@ -186,6 +186,92 @@ class ExcavatorMocapLiftingPolicy(BasePolicy):
             {"t": 400, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 0},
         ]
 
+
+class ExcavatorDigDumpPolicy(BasePolicy):
+    """Mocap-based full cycle: approach -> penetrate -> scoop -> lift -> swing -> dump -> return."""
+
+    def generate_trajectory(self, ts_first):
+        init_mocap_pose_right = ts_first.observation["mocap_pose_right"]
+        box_info = np.array(ts_first.observation["env_state"])
+        box_xyz = box_info[:3]
+        base_quat = Quaternion(init_mocap_pose_right[3:])
+        # Tray is on negative-y side in this scene.
+        tray_xyz = np.array([0.0, -4.0, 0.06])
+
+        self.right_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 0},
+            {"t": 55, "xyz": box_xyz + np.array([-0.68, 0.0, 0.45]), "quat": base_quat.elements, "gripper": 0},   # approach
+            {"t": 105, "xyz": box_xyz + np.array([-0.64, 0.0, 0.08]), "quat": base_quat.elements, "gripper": 0},  # penetrate deeper
+            {"t": 150, "xyz": box_xyz + np.array([-0.35, 0.0, 0.92]), "quat": base_quat.elements, "gripper": 0},  # aggressive scoop + lift
+            {"t": 235, "xyz": box_xyz + np.array([-0.15, 0.0, 1.28]), "quat": base_quat.elements, "gripper": 0},  # high carry
+            {"t": 300, "xyz": tray_xyz + np.array([-1.55, 0.0, 1.15]), "quat": base_quat.elements, "gripper": 0}, # swing to dump side
+            {"t": 330, "xyz": tray_xyz + np.array([-1.25, 0.0, 0.55]), "quat": base_quat.elements, "gripper": 0}, # lower to tray
+            {"t": 350, "xyz": tray_xyz + np.array([-0.98, 0.0, 0.18]), "quat": base_quat.elements, "gripper": 0}, # deep dump
+            {"t": 370, "xyz": tray_xyz + np.array([-1.03, 0.0, 0.14]), "quat": base_quat.elements, "gripper": 0}, # hold for release
+            {"t": 388, "xyz": tray_xyz + np.array([-1.30, 0.0, 0.70]), "quat": base_quat.elements, "gripper": 0}, # retreat from tray
+            {"t": 400, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 0},
+        ]
+
+
+class ExcavatorJointSpaceDigDumpPolicy:
+    """Direct joint-space cycle for sim_env rollout (skip EE->joint replay gap)."""
+
+    def __init__(self, inject_noise=False):
+        self.inject_noise = inject_noise
+        self.step_count = 0
+        self.waypoints = None
+        self.curr_waypoint = None
+
+    @staticmethod
+    def _interpolate(curr_waypoint, next_waypoint, t):
+        t_frac = (t - curr_waypoint["t"]) / (next_waypoint["t"] - curr_waypoint["t"])
+        return curr_waypoint["qpos"] + (next_waypoint["qpos"] - curr_waypoint["qpos"]) * t_frac
+
+    def _build_waypoints(self, ts_first):
+        box_xyz = np.array(ts_first.observation["env_state"][:3])
+        dig_swing = np.clip(np.arctan2(box_xyz[1], max(box_xyz[0], 0.2)) - 0.15, -1.2, 1.2)
+        dump_swing = -1.90  # command margin so realized swing can approach tray-contact zone
+        start_q = np.array(ts_first.observation["qpos"]).copy()
+
+        # Dynamic-search calibrated anchor (see test_and_study/search_dynamic_contact_pose.py):
+        # q ~= [-0.41, -0.23, 0.48, -0.80] can stably trigger touch+load on fixed box.
+        load_pose = np.array([dig_swing - 0.26, -0.23, 0.48, -0.80])
+        secure_pose = np.array([dig_swing - 0.30, -0.30, 0.32, -0.40])
+        lift_pose = np.array([dig_swing - 0.28, -0.18, 0.28, -1.05])
+        carry_pose = np.array([dig_swing - 0.32, -0.20, 0.36, -1.18])
+
+        self.waypoints = [
+            {"t": 0, "qpos": start_q},
+            {"t": 1, "qpos": load_pose},                                      # immediate move to dynamic-verified contact pose
+            {"t": 185, "qpos": load_pose},                                    # hold for touch + load stabilization
+            {"t": 235, "qpos": secure_pose},                                  # curl and secure material
+            {"t": 275, "qpos": lift_pose},                                         # lift with strong bucket curl
+            {"t": 305, "qpos": carry_pose},                                        # lock carry posture
+            {"t": 332, "qpos": np.array([dump_swing + 0.55, -0.18, 0.40, -1.10])}, # start slow swing, keep load locked
+            {"t": 354, "qpos": np.array([dump_swing + 0.28, -0.14, 0.46, -1.00])}, # transport mid
+            {"t": 370, "qpos": np.array([dump_swing + 0.12, -0.08, 0.54, -0.82])}, # above tray while still curled
+            {"t": 382, "qpos": np.array([dump_swing, -0.02, 0.62, -0.55])},        # descend to tray release zone
+            {"t": 390, "qpos": np.array([dump_swing, -0.08, 0.72, 0.05])},         # reverse-curl release stage 1
+            {"t": 396, "qpos": np.array([dump_swing + 0.08, -0.06, 0.62, 0.46])},  # reverse-curl release stage 2 + retreat
+            {"t": 400, "qpos": start_q},                                      # return
+        ]
+
+    def __call__(self, ts):
+        if self.step_count == 0:
+            self._build_waypoints(ts)
+            self.curr_waypoint = self.waypoints.pop(0)
+
+        if self.waypoints[0]["t"] == self.step_count:
+            self.curr_waypoint = self.waypoints.pop(0)
+        next_waypoint = self.waypoints[0]
+        action = self._interpolate(self.curr_waypoint, next_waypoint, self.step_count)
+
+        if self.inject_noise:
+            action = action + np.random.uniform(-0.01, 0.01, size=action.shape)
+
+        self.step_count += 1
+        return action
+
 class InsertionPolicy(BasePolicy):
 
     def generate_trajectory(self, ts_first):
@@ -252,7 +338,7 @@ def test_policy(task_name, equipment_model="vx300s_bimanual"):
     elif 'sim_lifting' in task_name:
         env = make_ee_sim_env('sim_lifting_cube', equipment_model=equipment_model)
         if equipment_model == 'excavator_simple':
-            policy_cls = ExcavatorMocapLiftingPolicy
+            policy_cls = ExcavatorDigDumpPolicy
         else:
             policy_cls = LiftingAndMovingPolicy
     else:
