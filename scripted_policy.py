@@ -195,8 +195,7 @@ class ExcavatorDigDumpPolicy(BasePolicy):
         box_info = np.array(ts_first.observation["env_state"])
         box_xyz = box_info[:3]
         base_quat = Quaternion(init_mocap_pose_right[3:])
-        # Tray is on negative-y side in this scene.
-        tray_xyz = np.array([0.0, -4.0, 0.06])
+        tray_xyz = np.array([0.0, 4.0, 0.06])
 
         self.right_trajectory = [
             {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 0},
@@ -214,13 +213,29 @@ class ExcavatorDigDumpPolicy(BasePolicy):
 
 
 class ExcavatorJointSpaceDigDumpPolicy:
-    """Direct joint-space cycle for sim_env rollout (skip EE->joint replay gap)."""
+    """Direct joint-space dig-dump cycle with distance-adaptive control and
+    semi-closed-loop phase transitions."""
+
+    # Anchor [boom, stick, bucket] calibrated at two radial distances.
+    # Near (r~3.4): arm more folded, bucket curled deeper for shorter reach.
+    # Far  (r~4.6): arm extended, matching original fixed-box calibration.
+    _R_NEAR = 3.4
+    _R_FAR = 4.6
+    _LOAD_NEAR   = np.array([ 0.05,  0.10, -0.95])
+    _LOAD_FAR    = np.array([-0.23,  0.48, -0.80])
+    _SECURE_NEAR = np.array([-0.05, -0.05, -0.55])
+    _SECURE_FAR  = np.array([-0.30,  0.32, -0.40])
+    _LIFT_NEAR   = np.array([ 0.08, -0.05, -1.20])
+    _LIFT_FAR    = np.array([-0.18,  0.28, -1.05])
+    _CARRY_NEAR  = np.array([ 0.05,  0.00, -1.30])
+    _CARRY_FAR   = np.array([-0.20,  0.36, -1.18])
 
     def __init__(self, inject_noise=False):
         self.inject_noise = inject_noise
         self.step_count = 0
         self.waypoints = None
         self.curr_waypoint = None
+        self._phase = "init"
 
     @staticmethod
     def _interpolate(curr_waypoint, next_waypoint, t):
@@ -229,40 +244,87 @@ class ExcavatorJointSpaceDigDumpPolicy:
 
     def _build_waypoints(self, ts_first):
         box_xyz = np.array(ts_first.observation["env_state"][:3])
-        dig_swing = np.clip(np.arctan2(box_xyz[1], max(box_xyz[0], 0.2)) - 0.15, -1.2, 1.2)
-        dump_swing = -1.90  # command margin so realized swing can approach tray-contact zone
+        r = np.sqrt(box_xyz[0] ** 2 + box_xyz[1] ** 2)
+        alpha = np.clip((r - self._R_NEAR) / (self._R_FAR - self._R_NEAR), 0.0, 1.0)
+
+        dig_swing = np.clip(
+            np.arctan2(box_xyz[1], max(box_xyz[0], 0.2)) - 0.15, -1.2, 1.2
+        )
+        dump_swing = -1.90
         start_q = np.array(ts_first.observation["qpos"]).copy()
 
-        # Dynamic-search calibrated anchor (see test_and_study/search_dynamic_contact_pose.py):
-        # q ~= [-0.41, -0.23, 0.48, -0.80] can stably trigger touch+load on fixed box.
-        load_pose = np.array([dig_swing - 0.26, -0.23, 0.48, -0.80])
-        secure_pose = np.array([dig_swing - 0.30, -0.30, 0.32, -0.40])
-        lift_pose = np.array([dig_swing - 0.28, -0.18, 0.28, -1.05])
-        carry_pose = np.array([dig_swing - 0.32, -0.20, 0.36, -1.18])
+        # Distance-adaptive boom/stick/bucket via linear interpolation
+        load_bsb = self._LOAD_NEAR + (self._LOAD_FAR - self._LOAD_NEAR) * alpha
+        secure_bsb = self._SECURE_NEAR + (self._SECURE_FAR - self._SECURE_NEAR) * alpha
+        lift_bsb = self._LIFT_NEAR + (self._LIFT_FAR - self._LIFT_NEAR) * alpha
+        carry_bsb = self._CARRY_NEAR + (self._CARRY_FAR - self._CARRY_NEAR) * alpha
+
+        load_pose = np.array([dig_swing - 0.26, load_bsb[0], load_bsb[1], load_bsb[2]])
+        secure_pose = np.array([dig_swing - 0.30, secure_bsb[0], secure_bsb[1], secure_bsb[2]])
+        lift_pose = np.array([dig_swing - 0.28, lift_bsb[0], lift_bsb[1], lift_bsb[2]])
+        carry_pose = np.array([dig_swing - 0.32, carry_bsb[0], carry_bsb[1], carry_bsb[2]])
+
+        # Smooth approach: swing/boom/stick move halfway, bucket stays near start
+        approach_pose = np.array([
+            (start_q[0] + load_pose[0]) * 0.5,
+            (start_q[1] + load_pose[1]) * 0.5,
+            (start_q[2] + load_pose[2]) * 0.5,
+            start_q[3],
+        ])
+
+        locked_bucket = carry_bsb[2]
 
         self.waypoints = [
-            {"t": 0, "qpos": start_q},
-            {"t": 1, "qpos": load_pose},                                      # immediate move to dynamic-verified contact pose
-            {"t": 185, "qpos": load_pose},                                    # hold for touch + load stabilization
-            {"t": 235, "qpos": secure_pose},                                  # curl and secure material
-            {"t": 275, "qpos": lift_pose},                                         # lift with strong bucket curl
-            {"t": 305, "qpos": carry_pose},                                        # lock carry posture
-            {"t": 332, "qpos": np.array([dump_swing + 0.55, -0.18, 0.40, -1.10])}, # start slow swing, keep load locked
-            {"t": 354, "qpos": np.array([dump_swing + 0.28, -0.14, 0.46, -1.00])}, # transport mid
-            {"t": 370, "qpos": np.array([dump_swing + 0.12, -0.08, 0.54, -0.82])}, # above tray while still curled
-            {"t": 382, "qpos": np.array([dump_swing, -0.02, 0.62, -0.55])},        # descend to tray release zone
-            {"t": 390, "qpos": np.array([dump_swing, -0.08, 0.72, 0.05])},         # reverse-curl release stage 1
-            {"t": 396, "qpos": np.array([dump_swing + 0.08, -0.06, 0.62, 0.46])},  # reverse-curl release stage 2 + retreat
-            {"t": 400, "qpos": start_q},                                      # return
+            {"t": 0,   "qpos": start_q,       "phase": "approach"},
+            {"t": 40,  "qpos": approach_pose,  "phase": "approach"},
+            {"t": 80,  "qpos": load_pose,      "phase": "hold_for_load"},
+            {"t": 185, "qpos": load_pose,      "phase": "hold_end"},
+            {"t": 235, "qpos": secure_pose,    "phase": "secure"},
+            {"t": 275, "qpos": lift_pose,      "phase": "lift"},
+            {"t": 305, "qpos": carry_pose,     "phase": "carry"},
+            # Transport: bucket locked at carry curl to prevent mid-swing drop
+            {"t": 332, "qpos": np.array([dump_swing + 0.55, -0.18, 0.40, locked_bucket]), "phase": "transport"},
+            {"t": 354, "qpos": np.array([dump_swing + 0.28, -0.14, 0.46, locked_bucket]), "phase": "transport"},
+            {"t": 370, "qpos": np.array([dump_swing + 0.12, -0.08, 0.54, locked_bucket]), "phase": "transport"},
+            # Dump: 3-stage slow release over ~28 steps
+            {"t": 378, "qpos": np.array([dump_swing, -0.02, 0.62, -0.55]),        "phase": "dump"},
+            {"t": 388, "qpos": np.array([dump_swing, -0.05, 0.68, -0.20]),        "phase": "dump"},
+            {"t": 394, "qpos": np.array([dump_swing, -0.08, 0.72,  0.10]),        "phase": "dump"},
+            {"t": 398, "qpos": np.array([dump_swing + 0.08, -0.06, 0.62, 0.30]), "phase": "retreat"},
+            {"t": 400, "qpos": start_q,                                           "phase": "done"},
         ]
+
+    def _advance_to_phase(self, target_phase):
+        """Skip waypoints until *target_phase* for early phase transition."""
+        while self.waypoints and self.waypoints[0].get("phase") != target_phase:
+            self.waypoints.pop(0)
+        self.curr_waypoint = {
+            "t": self.step_count,
+            "qpos": self.curr_waypoint["qpos"].copy(),
+            "phase": self._phase,
+        }
+        self._phase = target_phase
 
     def __call__(self, ts):
         if self.step_count == 0:
             self._build_waypoints(ts)
             self.curr_waypoint = self.waypoints.pop(0)
+            self._phase = self.curr_waypoint.get("phase", "approach")
 
-        if self.waypoints[0]["t"] == self.step_count:
+        # Semi-closed-loop: advance past hold once box is loaded
+        if self._phase == "hold_for_load":
+            box_z = ts.observation["env_state"][2]
+            if box_z > 0.30 and self.waypoints:
+                self._advance_to_phase("secure")
+
+        if self.waypoints and self.waypoints[0]["t"] <= self.step_count:
             self.curr_waypoint = self.waypoints.pop(0)
+            self._phase = self.curr_waypoint.get("phase", self._phase)
+
+        if not self.waypoints:
+            self.step_count += 1
+            return self.curr_waypoint["qpos"].copy()
+
         next_waypoint = self.waypoints[0]
         action = self._interpolate(self.curr_waypoint, next_waypoint, self.step_count)
 
