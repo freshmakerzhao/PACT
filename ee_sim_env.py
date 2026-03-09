@@ -13,13 +13,15 @@ from constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
 from constants import EXCAVATOR_MAIN_JOINTS, EXCAVATOR_START_POSE
 
+from PACT.simulation.rewards import ExcavatorPoseReward
 from utils import sample_box_pose, sample_insertion_pose, sample_box_pose_for_excavator
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
 
-import IPython
-e = IPython.embed
+
+EXCAVATOR_BOX_POSE = [None]
+
 
 def make_ee_sim_env(task_name, equipment_model: str = 'vx300s_bimanual'):
     """
@@ -348,21 +350,19 @@ class TransferCubeEETask(BimanualViperXEETask):
 class ExcavatorSimpleLiftingCubeEETask(BimanualViperXEETask):
     def __init__(self, random=None, arm_nums=1, equipment_model='vx300s_single'):
         super().__init__(random=random, arm_nums=arm_nums, equipment_model=equipment_model)
-        self.max_reward = 4
-        self._touched_box = False
-        self._loaded_box = False
-        self._reached_dump_zone = False
-        self._dumped_box = False
+        self.max_reward = 4.0
+        self._pose_rewarder = ExcavatorPoseReward()
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
         self.initialize_robots(physics)
-        self._touched_box = False
-        self._loaded_box = False
-        self._reached_dump_zone = False
-        self._dumped_box = False
-        # randomize box position
-        cube_pose = sample_box_pose_for_excavator()
+        self._pose_rewarder.reset()
+        # 支持外部固定场景；若无则随机
+        cube_pose = (
+            EXCAVATOR_BOX_POSE[0]
+            if EXCAVATOR_BOX_POSE[0] is not None
+            else sample_box_pose_for_excavator()
+        )
         box_start_idx = physics.model.name2id('red_box_joint', 'joint') # 根据名字找到box的索引
         np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
 
@@ -378,51 +378,27 @@ class ExcavatorSimpleLiftingCubeEETask(BimanualViperXEETask):
         return env_state
 
     def get_reward(self, physics):
-        all_contact_pairs = set()
-        for i_contact in range(physics.data.ncon):
-            id_geom_1 = physics.data.contact[i_contact].geom1
-            id_geom_2 = physics.data.contact[i_contact].geom2
-            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
-            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            all_contact_pairs.add((name_geom_1, name_geom_2))
-            all_contact_pairs.add((name_geom_2, name_geom_1))
+        qpos = self._get_excavator_qpos(physics)
+        return float(self._pose_rewarder.step_reward(qpos))
 
-        box_geom = "red_box"
-        bucket_geom = "excavator_bucket"
-        tray_geom = "yellow_dump_tray"
+    @staticmethod
+    def _get_excavator_task_obs(physics):
+        box_joint_id = physics.model.name2id('red_box_joint', 'joint')
+        box_start_idx = physics.model.jnt_qposadr[box_joint_id]
+        box_state = physics.data.qpos.copy()[box_start_idx:]
+        box_xyz = box_state[:3].copy()
+        bucket_tip_xyz = physics.named.data.site_xpos["bucket_tip"].copy()
+        dump_target_xyz = physics.named.data.site_xpos["dump_target"].copy()
+        return {
+            "box_xyz": box_xyz,
+            "bucket_tip_xyz": bucket_tip_xyz,
+            "dump_target_xyz": dump_target_xyz,
+        }
 
-        touch_bucket_box = (bucket_geom, box_geom) in all_contact_pairs
-        touch_box_tray = (box_geom, tray_geom) in all_contact_pairs
-        touch_bucket_tray = (bucket_geom, tray_geom) in all_contact_pairs
-
-        box_state = self.get_env_state(physics)
-        _, box_y, box_z = box_state[:3]
-        swing_q = float(physics.named.data.qpos['j1_swing'])
-
-        reward = 0.0
-        if touch_bucket_box:
-            self._touched_box = True
-            reward = max(reward, 1.0)
-
-        if self._touched_box and box_z > 0.285:
-            self._loaded_box = True
-            reward = max(reward, 2.0)
-
-        if self._loaded_box and abs(swing_q) > 1.0:
-            self._reached_dump_zone = True
-            reward = max(reward, 2.8)
-
-        if self._reached_dump_zone and touch_bucket_tray:
-            reward = max(reward, 3.0)
-
-        if self._reached_dump_zone and touch_box_tray and (not touch_bucket_box) and box_z < 0.35:
-            self._dumped_box = True
-            reward = max(reward, 4.0)
-
-        if self._touched_box and (not self._loaded_box):
-            reward = max(reward, 1.2)
-
-        return reward
+    def get_observation(self, physics):
+        obs = super().get_observation(physics)
+        obs.update(self._get_excavator_task_obs(physics))
+        return obs
 
 class LiftingCubeEETask(BimanualViperXEETask):
     def __init__(self, random=None, arm_nums=1, equipment_model='vx300s_single'):

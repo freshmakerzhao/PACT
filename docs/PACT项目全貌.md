@@ -2,7 +2,7 @@
 
 > **维护规则**：每次对 `PACT/` 下源码的修改（新增文件、删除文件、修改接口签名、变更数据流）都 **必须** 同步更新本文档对应章节。此规则已写入 `.cursor/rules/doc-sync.mdc`。
 
-最后更新：2026-03-06
+最后更新：2026-03-09
 
 ---
 
@@ -39,15 +39,28 @@ PACT/
 │   │   └── position_encoding.py     # Sine/Learned 位置编码
 │   └── setup.py
 │
+├── core/                             # 类型与接口层（types / interfaces）
+├── simulation/                       # 统一后端 + env 包装 + 场景/奖励
+│   ├── backends/                     # MuJoCo backend 统一接口
+│   ├── envs/                         # sim_env / ee_sim_env 包装
+│   ├── scene/                        # SceneState（替代 BOX_POSE 直连）
+│   └── rewards/                      # 挖机姿态流程评分（pose-only）
+├── policies/                         # 策略分层（scripted / learned / registry）
+├── testbed/                          # rollout / pipelines / evaluators / render
+├── io/                               # HDF5 读写、stats、manifest
+├── config/                           # task_specs / registry / overrides
+├── runners/                          # collect/train/eval runner
+├── tests/                            # 回归：golden reward 检查、ee_replay pipeline、collect e2e
+├── tools/                            # generate_excavator_reward_golden 等
 ├── constants.py          # ★ 全局常量：DT、关节名、初始位姿、夹爪归一化函数、任务配置
 ├── sim_env.py            # ★ 关节空间仿真环境（make_sim_env + Task 类）
 ├── ee_sim_env.py         # ★ 末端执行器(EE)空间仿真环境（make_ee_sim_env + EETask 类）
-├── scripted_policy.py    # ★ 脚本策略（含挖机完整挖掘循环路点）
-├── ee_backend.py         # ★ EE 仿真后端抽象层（EESimBackend / MuJoCoEESimBackend）
-├── sim_backend.py        # ★ 仿真后端抽象层（SimBackend / MuJoCoSimBackend）
-├── record_sim_episodes.py# ★ 数据采集入口：EE 执行 → 关节轨迹重放（经 SimBackend）→ HDF5
-├── policy.py             # ★ 策略封装：ACTPolicy / CNNMLPPolicy（训练/推理接口）
-├── imitate_episodes.py   # ★ 训练 & 评测入口：train_bc / eval_bc
+├── scripted_policy.py    # ★ 兼容入口：转调 policies/scripted
+├── ee_backend.py         # ★ 兼容入口：转调 simulation/backends
+├── sim_backend.py        # ★ 兼容入口：转调 simulation/backends
+├── record_sim_episodes.py# ★ 兼容入口：转调 runners/collect_runner
+├── policy.py             # ★ 兼容入口：转调 policies/learned
+├── imitate_episodes.py   # ★ 兼容入口：转调 runners/train_runner/eval_runner
 ├── utils.py              # 数据加载(EpisodicDataset)、归一化统计、随机采样、工具函数
 ├── visualize_episodes.py # 可视化：HDF5→视频、关节轨迹绘图
 ├── 常用命令.txt            # CLI 命令速查
@@ -55,6 +68,8 @@ PACT/
 ├── conda_env.yaml
 └── data_sim_episodes/    # 生成的 HDF5 数据目录（可通过 PACT_DATA_DIR 环境变量覆盖）
 ```
+
+**已清理（fs/decoupling）**：`study_*.py`、`trajectories.py`、`test_and_study/` 等仅用于调试的脚本与 sim_env 内硬件遥操作死代码已移除，主流程仅依赖上述模块。
 
 ---
 
@@ -93,6 +108,8 @@ HDF5 文件: episode_N.hdf5
   /action                     (T, state_dim)     float64
   root.attrs['sim'] = True
 ```
+
+> 模块化入口：`runners/collect_runner.py` → `testbed/pipelines.py` → `io/hdf5_writer.py`。
 
 ### 3.2 训练流
 
@@ -149,6 +166,16 @@ SimBackend.reset()
 
 ## 4. 关键模块详解
 
+### 4.0 模块化分层（新增）
+
+- `core/`：`types.py`/`interfaces.py` 统一数据类型与后端/策略接口。
+- `simulation/backends/`：统一后端接口，MuJoCo 实现集中在 `mujoco.py`。
+- `policies/`：`scripted/` 迁入脚本策略，`learned/` 迁入学习策略，`registry.py` 负责分派。
+- `testbed/`：`rollout.py` 执行单回合；`pipelines.py` 负责 `ee_replay`/`direct_sim`，在 `info["pose_eval"]` 中输出 `pose_reward`/`pose_phases`/`pose_phase_flags`/`pose_phase_switch_steps`。对 `ee_replay`，`pose_eval` 统一基于 **replay 后 sim 真实 qpos** 计算，以与环境 reward / HDF5 观测一致；**挖掘机**（`excavator_simple`）使用专用 **replay follower**（每目标多步跟踪 + 卸料窗口 hold + 最终 dump hold），不再单步直推 qpos，以保证 replay 达到 dump_open 4.0。同时额外提供 `info["ee_pose_eval"]`、`info["replay_follow_stats"]` 作为调试信息。`evaluators.py` 调用 `ExcavatorPoseReward` 做 pose-only 评分（无硬编码阈值，阈值集中在 reward 模块）。
+- `io/`：HDF5 写入与 stats 保存集中管理。
+- `runners/`：`collect_runner`/`train_runner`/`eval_runner` 作为新入口。
+- 旧脚本（`record_sim_episodes.py`/`imitate_episodes.py`/`scripted_policy.py`/`policy.py`）保留为壳层以兼容旧命令。
+
 ### 4.1 constants.py — 全局配置中心
 
 | 常量 | 值 | 说明 |
@@ -188,7 +215,7 @@ SimBackend.reset()
 - `ExcavatorSimpleLiftingCubeTask(base.Task)` — 挖掘机专用，不继承 BimanualViperX
   - `before_step` 直接 `np.copyto(physics.data.ctrl, action)`
   - `get_qpos/get_qvel` 按关节名索引 `physics.data.qpos/qvel`
-  - `get_reward` 基于阶段奖励（接触→装载抬升→回转到卸料侧→卸料）
+  - `get_reward` 使用 pose-only 评分（`ExcavatorPoseReward.step_reward`），不依赖刚体接触
 
 **观测输出结构**（所有 Task 共用）：
 ```python
@@ -204,6 +231,11 @@ obs = {
 }
 ```
 
+**挖掘机额外观测（task-space 调试）**：
+- `box_xyz`：方块位置（与 env_state 对齐）
+- `bucket_tip_xyz`：铲斗尖端 site 世界坐标
+- `dump_target_xyz`：卸料目标 site 世界坐标
+
 **全局变量 `BOX_POSE`**：由外部在 reset 前设置方块初始位姿，`initialize_episode` 中写入 `physics.data.qpos`。
 
 ### 4.3 ee_sim_env.py — EE 空间环境
@@ -218,9 +250,13 @@ obs = {
   - `initialize_robots(physics)` — 设置初始关节位姿 + mocap 位姿
   - 挖掘机分支：当 action 长度 == 4 时直接写 ctrl（关节空间），否则走 mocap
   - 额外输出 `obs['mocap_pose_right']` 和 `obs['gripper_ctrl']`
-- `ExcavatorSimpleLiftingCubeEETask` — 挖掘机 EE 版搬方块
+- `ExcavatorSimpleLiftingCubeEETask` — 挖掘机 EE 版搬方块，奖励使用 `ExcavatorPoseReward`（与 SIM 共用，pose-only）
+  - 支持外部固定 box pose（由 backend 写入共享容器）
+  - 额外输出 `box_xyz`/`bucket_tip_xyz`/`dump_target_xyz`，用于 task-space 策略
 
-### 4.4 scripted_policy.py — 脚本策略
+### 4.4 scripted_policy.py — 脚本策略（壳层）
+
+- 策略实现已迁至 `policies/scripted/`，旧文件仅做兼容导出。
 
 **BasePolicy**：
 - 首帧调用 `generate_trajectory(ts_first)` 生成关键路点序列
@@ -233,14 +269,15 @@ obs = {
 | `InsertionPolicy` | sim_insertion | 双臂：抓 peg+socket → 插入 |
 | `LiftingAndMovingPolicy` | sim_lifting_cube (非挖掘机) | 单臂：抓→抬→移至托盘→放 |
 | `ExcavatorDigDumpPolicy` | sim_lifting_cube (挖掘机, EE) | 挖机完整循环：接近→切入→收斗→抬升→回转→卸料→回位 |
-| `ExcavatorJointSpaceDigDumpPolicy` | sim_lifting_cube (挖掘机, SIM) | 直接关节空间循环，绕过 EE->SIM 重放偏差 |
+| `ExcavatorTaskSpaceDigDumpPolicy` | sim_lifting_cube (挖掘机, EE) | 任务空间阶段规划：mocap 目标→仿真解出关节→回放 |
+| `ExcavatorJointSpaceDigDumpPolicy` | sim_lifting_cube (挖掘机, SIM) | 关节空间回放策略，保留作对照/回滚 |
 
-**挖机策略执行要点**（`ExcavatorDigDumpPolicy` + `ExcavatorJointSpaceDigDumpPolicy`）：
-- 使用单臂 mocap 路点插值，覆盖完整作业循环：接近、切入、收斗、抬升、回转、下放、回位。
-- 每条演示轨迹固定关键路点（0~400 步插值），通过高度变化显式表达“切入+抬升+下放”。
+**挖机策略执行要点**（`ExcavatorTaskSpaceDigDumpPolicy` + `ExcavatorJointSpaceDigDumpPolicy`）：
+- 使用 task-space 关键点（box/tray/site）规划完整作业循环：接近、切入、收斗、抬升、回转、下放、回位。
 - 在 `ee_sim_env` 执行后，统一提取关节轨迹并在 `sim_env` 重放，保持训练数据形态不变（state_dim=4）。
-- 卸料段已按“抬升流程反向”细分为：对位进场→下放贴盘→反卷释放→脱离回撤（多路点分段执行）。
-- 关节空间策略已引入“动态搜索锚点”驱动前段动作：先快速进入可达接触姿态并保持，再执行卷斗与抬升段。
+- 卸料段显式包含“回转→下放→释放”，避免仅在固定 swing 角开斗导致落点误差。
+- task-space 默认参数会在 swing 阶段抬高并收斗，确保能越过托盘高度后再下放。
+- 关节空间策略保留为对照/回滚路线。
 
 **`ExcavatorJointSpaceDigDumpPolicy` 控制流改进**（2026-03-06）：
 
@@ -251,27 +288,35 @@ obs = {
 5. **卸料缓释**：反卷释放从原先 14 步扩展到 ~28 步（t=370~398），分 3 阶段线性展开 bucket，防止载荷被甩出托盘。
 6. **Bug 修复**：`ExcavatorDigDumpPolicy` 中 `tray_xyz` 的 y 坐标从 `-4.0` 修正为 `+4.0`，与场景 XML 中的托盘位置一致。
 
+**铲斗动作与步骤顺序**（与 excavator_pose_reward 对齐）：
+- **铲斗约定**：bucket 正 = 内收/开口平行地面；bucket 负 = 开口朝下。挖掘侧统一 swing（`swing_dig`），无段间多余旋转；卸料侧仅转到 `_DUMP_SWING=-1.15`（满足 abs≥1.0 即可）。
+- **挖掘段**：低位下铲（_LOAD_NEAR 调低 boom/stick）→ 铲斗开口朝下 bucket=-0.85（bucket_out）→ 同高度 bucket<-1.0（bucket_in_scoop）→ **先收斗**（同低位 bucket=0.4 开口平行）→ **再抬臂**（secure→lift→carry）。
+- **卸料段**：transport 只转到 -1.15；dump 段 bucket 经 0.5→0.08 以触发 dump_open 4.0。
+
 **训练准入阈值（当前阶段）**：
-- 使用 `success_reward_threshold=3.0` 作为采集与训练准入阈值。
-- `4.0`（方块入托盘且与铲斗分离）受刚体接触建模影响，暂作为模拟器升级后的回归指标。
+- 使用 `--success_reward_threshold 4.0` 可要求轨迹达到 dump_open（abs_swing>=1.0 且 bucket>=THRESH_BUCKET_DUMPED）；使用 `3.0` 则仅要求回转到卸料侧并做卸料动作。
+- 采集成功判定以 **replay 侧** 为准；`ee_replay` 对挖掘机已做保真跟踪（replay follower），固定 pose 下 replay 可达到 4.0。
 
 **挖机采集路径（当前配置）**：
 - `record_sim_episodes.py` 在 `equipment_model=excavator_simple` 时，支持两种流程：
-  - `ee_replay`（默认）：先在 `EESimBackend` rollout，再在 `SimBackend` 重放录制（保留完整流程）。
+  - `ee_replay`（默认）：先在 `EESimBackend` rollout，再在 `SimBackend` 用 **replay follower** 重放录制（每目标多步跟踪 + 卸料窗口 hold），保证 replay 与 EE 语义一致并可打满 4.0。
   - `direct_sim`：直接在 `SimBackend` rollout（用于快速验证与对照）。
-- 两种流程都使用 `ExcavatorJointSpaceDigDumpPolicy`，并支持 `success_reward_threshold` 判定与 HDF5 元数据记录。
+- 默认使用 `ExcavatorTaskSpaceDigDumpPolicy`；`ExcavatorJointSpaceDigDumpPolicy` 保留为对照。
 
 ### 4.5 record_sim_episodes.py — 数据采集
 
+- 当前为兼容壳层，转调 `runners/collect_runner.py`。
+- 核心流程拆到 `testbed/pipelines.py`（`ee_replay`/`direct_sim`），HDF5 写入集中到 `io/hdf5_writer.py`。
+
 **按设备分支的数据采集流程**：
-1. 挖掘机（`excavator_simple`）可选两阶段 `ee_replay`（默认）或单阶段 `direct_sim`。
+1. 挖掘机（`excavator_simple`）可选两阶段 `ee_replay`（默认）或单阶段 `direct_sim`。`ee_replay` 时成功判定与 HDF5 内容均以 **replay 侧** 为准（replay follower 保证保真跟踪）。
 2. 其他设备保持两阶段流程：`EESimBackend` rollout 生成关节轨迹，再在 `SimBackend` 重放录制 HDF5。
 
 **挖掘机注意事项**：
 - 挖掘机 `state_dim=4`（四个主关节），无夹爪维度；`record_sim_episodes.py` 不会对挖掘机轨迹执行“夹爪 ctrl 回填”。
 
 **当前挖机默认策略**：
-- `sim_lifting_cube_scripted + excavator_simple` 使用 `ExcavatorJointSpaceDigDumpPolicy`。
+- `sim_lifting_cube_scripted + excavator_simple` 使用 `ExcavatorTaskSpaceDigDumpPolicy`。
 
 **关键 CLI 参数**：
 - `--task_name`：任务名（必须在 `SIM_TASK_CONFIGS` 中定义）
@@ -285,6 +330,8 @@ obs = {
 - `--target_success_episodes`：保存到指定成功条数后自动停止
 
 ### 4.6 policy.py — 策略封装
+
+- 当前为兼容壳层，学习策略实现迁至 `policies/learned/act.py`。
 
 **ACTPolicy(nn.Module)**：
 - 构造时调用 `build_ACT_model_and_optimizer` 创建 DETRVAE 模型 + AdamW 优化器
@@ -335,6 +382,8 @@ obs = {
 
 ### 4.8 imitate_episodes.py — 训练 & 评测入口
 
+- 当前为兼容壳层，训练与评测逻辑迁至 `runners/train_runner.py` 与 `runners/eval_runner.py`。
+
 **训练流程 `train_bc`**：
 1. 创建 `ACTPolicy` → cuda
 2. 可选从 `--resume_ckpt` 恢复（模型+优化器+epoch+min_val_loss）
@@ -345,18 +394,22 @@ obs = {
 
 **评测流程 `eval_bc`**：
 1. 加载 checkpoint + `dataset_stats.pkl`（归一化参数）
-2. 创建 `SimBackend`（当前 `MuJoCoSimBackend`），执行 50 个 rollout
+2. 创建 `SimBackend`（当前 `MuJoCoSimBackend`），执行 `--num_rollouts` 个 rollout（默认 50，可指定为 1 做快速验证）
 3. 每步：`pre_process(qpos)` → `policy(qpos, image)` → `post_process(action)` → `backend.step(action)`
 4. 支持 `--temporal_agg`：指数衰减加权融合历史 action chunk
 5. 输出 success_rate / avg_return / 分级 reward 统计 / 视频
 
 ### 4.11 sim_backend.py — 仿真后端抽象层
 
+- 当前为兼容壳层，统一后端迁至 `simulation/backends/mujoco.py`，接口为 `SimulationBackend`。
+
 - `SimBackend`：统一 `reset/step/render/max_reward/set_initial_object_pose` 接口。
 - `MuJoCoSimBackend`：对 `make_sim_env` 和 `BOX_POSE` 进行封装，向训练与采集流程提供稳定接口。
 - 作用：将 ACT 训练/评测流程与 MuJoCo 实现细节解耦，后续接入新后端时只需新增 backend 实现。
 
 ### 4.12 ee_backend.py — EE 仿真后端抽象层
+
+- 当前为兼容壳层，统一后端迁至 `simulation/backends/mujoco.py`。
 
 - `EESimBackend`：统一 EE 录制阶段的 `reset/step/max_reward` 接口。
 - `MuJoCoEESimBackend`：封装 `make_ee_sim_env`，让录制流程不直接依赖具体仿真实现。
@@ -386,6 +439,8 @@ obs = {
 | `fairino5_single` | 7 | 臂6+夹爪1 | 法奥 FR5 |
 | `excavator_simple` | 4 | swing+boom+stick+bucket | 挖掘机（无夹爪） |
 
+> 统一入口：`config/registry.py` 中 `StateDimRegistry`。
+
 ---
 
 ## 6. MuJoCo 耦合点清单
@@ -398,12 +453,13 @@ obs = {
 | `sim_env.py` | 环境创建 | `control.Environment(physics, task, ...)` |
 | `sim_env.py` | 状态读取 | `physics.data.qpos`, `physics.data.qvel`, `physics.data.ctrl` |
 | `sim_env.py` | 命名访问 | `physics.named.data.qpos[:16]`, `physics.named.data.qpos[joint_name]` |
+| `sim_env.py` | 站点查询 | `physics.named.data.site_xpos['bucket_tip']`, `physics.named.data.site_xpos['dump_target']` |
 | `sim_env.py` | 模型查询 | `physics.model.name2id()`, `physics.model.jnt_qposadr[]` |
 | `sim_env.py` | 渲染 | `physics.render(height, width, camera_id)` |
 | `sim_env.py` | 接触检测 | `physics.data.ncon`, `physics.data.contact[i].geom1/geom2` |
 | `sim_env.py` | 重置 | `physics.reset_context()`, `physics.forward()` |
 | `ee_sim_env.py` | mocap 控制 | `physics.data.mocap_pos[0]`, `physics.data.mocap_quat[0]` |
-| `ee_sim_env.py` | 站点查询 | `physics.named.data.site_xpos['tcp_center']` |
+| `ee_sim_env.py` | 站点查询 | `physics.named.data.site_xpos['tcp_center']`, `physics.named.data.site_xpos['bucket_tip']`, `physics.named.data.site_xpos['dump_target']` |
 | `ee_sim_env.py` | 四元数转换 | `mujoco.mju_mat2Quat(...)` |
 | `sim_backend.py` | MuJoCo 封装 | `make_sim_env(...)`, `env._physics.render(...)`, `BOX_POSE[...]` |
 
@@ -420,11 +476,11 @@ python record_sim_episodes.py \
     --num_episodes 50 \
     --equipment_model excavator_simple \
     --excavator_pipeline ee_replay \
-    --success_reward_threshold 3.0
+    --success_reward_threshold 4.0
 ```
 
 ```bash
-# 挖掘机 smoke test（固定方块位姿，便于稳定回归）
+# 挖掘机 smoke test（固定方块位姿，replay follower 下可打满 4.0）
 python record_sim_episodes.py \
     --task_name sim_lifting_cube_scripted \
     --dataset_dir ./tmp_smoke_excavator \
@@ -432,7 +488,7 @@ python record_sim_episodes.py \
     --equipment_model excavator_simple \
     --excavator_pipeline ee_replay \
     --fixed_excavator_box_pose \
-    --success_reward_threshold 3.0
+    --success_reward_threshold 4.0
 ```
 
 ### 训练
@@ -466,6 +522,8 @@ python imitate_episodes.py \
     ... (同训练参数) ... \
     --equipment_model excavator_simple \
     --eval
+# 快速验证（只跑 1 轮）
+python imitate_episodes.py ... --eval --num_rollouts 1
 ```
 
 ---
@@ -475,7 +533,7 @@ python imitate_episodes.py \
 | 编号 | 问题 | 严重度 | 说明 |
 |------|------|--------|------|
 | T1 | 无土体物理 | 致命 | MuJoCo 刚体接触无法表达挖掘/装载核心物理 |
-| T2 | 仿真后端解耦仍不彻底 | 中 | 已新增 `SimBackend` 封装评测/录制入口，但 `sim_env.py/ee_sim_env.py` 内部仍直接依赖 MuJoCo |
+| T2 | 仿真后端解耦仍不彻底 | 中 | 已新增 `SimBackend` 封装评测/录制入口，`simulation/envs` 仍桥接 legacy `sim_env.py/ee_sim_env.py`（过渡态）；后续可逐步将 Task 逻辑迁入 `simulation/envs` 并废弃 legacy 直连 |
 | T3 | 学习阶段路由尚未接入 | 中 | 已有挖机脚本分阶段轨迹，但 ACT 侧仍是单策略推理，无显式 Phase Router |
 | T4 | 无安全约束 | 中 | 无 Guard、无关节限位校验、无异常退让 |
 | T5 | 无状态接口层 | 中 | 策略直接读取原始 qpos，缺少结构化 S_t |
@@ -512,42 +570,35 @@ python imitate_episodes.py \
 
 ## 10. 奖励函数设计
 
-### ExcavatorSimpleLiftingCubeTask
+### ExcavatorSimpleLiftingCubeTask（Pose-only）
 
-当前奖励由“接触事件”升级为“完整循环阶段奖励”：
+挖机奖励已切换为 **pose-only**：仅依据关节姿态（swing/boom/stick/bucket），不依赖刚体接触。
 
-| reward | 条件 | 含义 |
-|--------|------|------|
-| 0.0 | 默认 | 未进入关键阶段 |
-| 1.0 | `touch_bucket_box` | 铲斗接触目标 |
-| 1.2 | `touched && !loaded` | 仅碰触未装载（防止学成推箱子） |
-| 2.0 | `touched && box_z > 0.285` | 载荷抬升（装载成立） |
-| 2.8 | `loaded && abs(swing_q) > 1.0` | 回转进入卸料侧 |
-| 3.0 | `reached_dump_zone && touch_bucket_tray` | 卸料动作到位（铲斗到托盘） |
-| 4.0 | `reached_dump_zone && touch_box_tray && !touch_bucket_box && box_z < 0.35` | 卸料完成 |
+| reward | 阶段 | 关节条件（阈值在 excavator_pose_reward.py 中集中配置） |
+|--------|------|------------------------------------------------------|
+| 0.0 | start | 默认 |
+| 1.0 | bucket_out | 铲斗接近（bucket < -0.6, abs_swing < 1.0） |
+| 2.0 | bucket_in_scoop | 装载成立（bucket < -1.0） |
+| 2.8 | swing_to_target | 回转到卸料侧（abs_swing >= 1.0, bucket < -0.4） |
+| 3.0 | dump_open | 卸料动作（abs_swing >= 1.0 且 bucket >= THRESH_BUCKET_DUMP，约 -0.55） |
+| 4.0 | dump_open | 卸料完成（abs_swing >= 1.0 且 **bucket >= THRESH_BUCKET_DUMPED，约 -0.31**） |
 
-状态标志位：`_touched_box/_loaded_box/_reached_dump_zone/_dumped_box` 在 `initialize_episode` 时统一重置。
+**达到 reward=4.0 的条件**：轨迹中至少有一帧同时满足 `abs(qpos[0]) >= 1.0`（回转至卸料侧）且 `qpos[3] >= THRESH_BUCKET_DUMPED`（当前约 -0.31，见 `excavator_pose_reward.py`）。`ee_replay` 使用 replay follower 后，固定 pose 下 replay 可达到 4.0；采集时可用 `--success_reward_threshold 4.0`。
+
+- `simulation/rewards/excavator_pose_reward.py`：`ExcavatorPoseReward` 提供 `evaluate(qpos_traj)`（离线）和 `step_reward(qpos)`（环境每步），返回 `PoseRewardResult(reward, phases, phase_flags, phase_switch_steps)`。
+- `testbed/evaluators.py` 调用上述模块，在 `info["pose_eval"]` 中输出 `pose_reward/pose_phases/pose_phase_flags/pose_phase_switch_steps`，用于可解释流程日志与回归对照。
 
 ---
 
 ## 11. 依赖关系图（模块间 import）
 
 ```
-constants.py ←── sim_env.py ←── sim_backend.py ←── record_sim_episodes.py
-     ↑               ↑                    ↑                        ↑
-     │          ee_sim_env.py ←── ee_backend.py ──────────────────┘
-     │               ↑                ↑
-     │               └──── scripted_policy.py
-     │               ↑                                            │
-     └───────────────┘                                            │
-                                                                  │
-policy.py ──→ detr/main.py ──→ detr/models/detr_vae.py          │
-     ↑                              ↑                             │
-     └──────────────────────────────┘─────────────────────────────┘
-                                                                  │
-imitate_episodes.py ───────────────→ sim_backend.py             │
-utils.py ←────────────────────────────────────────────────────────┘
-visualize_episodes.py ←───────────────────────────────────────────┘
+record_sim_episodes.py → runners/collect_runner → testbed/pipelines → simulation/backends
+scripted_policy.py → policies/scripted ───────────────────────────┘
+imitate_episodes.py → runners/train_runner|eval_runner → policies/learned → detr/*
+sim_backend.py / ee_backend.py → simulation/backends (mujoco)
+simulation/envs → sim_env.py / ee_sim_env.py → constants.py
+io/hdf5_writer.py / io/stats.py → utils.py (dataset)
 ```
 
 ---

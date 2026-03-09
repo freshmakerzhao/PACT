@@ -70,6 +70,9 @@
             <inertial pos="0.72017 0 0.569" quat="0 0.684168 0 0.729324" mass="359.5" diaginertia="169.366 138.37 94.3213"/>
             <joint name="j4_bucket" pos="0 0 0" axis="0 1 0" range="-2.1 0.6" armature="50" damping="20000"/>
             <geom name="excavator_bucket" type="mesh" rgba="0.52941 0.54902 0.54902 1" mesh="excavator_simple_8_bucket"/>
+            <!-- 任务空间观测：铲斗尖端与口部中心 -->
+            <site name="bucket_tip" pos="0.80 0.0 -0.20" size="0.02" rgba="0 1 0 1"/>
+            <site name="bucket_mouth_center" pos="0.55 0.0 0.10" size="0.02" rgba="0 0 1 1"/>
             <!-- 斗连杆 -->
             <body name="excavator_simple/bucket_link" pos="-0.10419 0 0.59088" quat="0.964663 0 0.263487 0">
               <inertial pos="0 0 -0.314" mass="16.973" diaginertia="1.2029 1.0753 0.1691"/>

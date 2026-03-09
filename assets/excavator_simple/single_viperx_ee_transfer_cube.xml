@@ -55,6 +55,7 @@
         
         <body name="dump_tray" pos="0 4.0 0">
             <geom type="cylinder" size="1.0 0.1" rgba="0.8 0.8 0.2 1" name="yellow_dump_tray"/>
+            <site name="dump_target" pos="0 0 0.12" size="0.03" rgba="0 1 1 1"/>
         </body>
     </worldbody>
 

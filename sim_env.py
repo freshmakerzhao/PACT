@@ -8,16 +8,14 @@ from dm_control.suite import base
 
 from constants import DT, START_FAIRINO_POSE, XML_DIR, START_ARM_POSE, START_SINGLE_ARM_POSE
 from constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
-from constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
 from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
-from constants import EXCAVATOR_MAIN_JOINTS,EXCAVATOR_START_POSE 
+from constants import EXCAVATOR_MAIN_JOINTS, EXCAVATOR_START_POSE
 
-import IPython
-e = IPython.embed
+from PACT.simulation.rewards import ExcavatorPoseReward
 
-BOX_POSE = [None] # to be changed from outside
+BOX_POSE = [None]  # to be changed from outside
 
 def make_sim_env(task_name, equipment_model: str = 'vx300s_bimanual'):
     """
@@ -332,12 +330,9 @@ class LiftingCubeTask(BimanualViperXTask):
 class ExcavatorSimpleLiftingCubeTask(base.Task):
     def __init__(self, random=None, equipment_model='excavator_simple'):
         super().__init__(random=random)
-        self.max_reward = 4
+        self.max_reward = 4.0
         self.equipment_model = equipment_model
-        self._touched_box = False
-        self._loaded_box = False
-        self._reached_dump_zone = False
-        self._dumped_box = False
+        self._pose_rewarder = ExcavatorPoseReward()
 
     def before_step(self, action, physics):
         if len(action) != len(EXCAVATOR_MAIN_JOINTS):
@@ -345,10 +340,7 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         np.copyto(physics.data.ctrl, action)
 
     def initialize_episode(self, physics):
-        self._touched_box = False
-        self._loaded_box = False
-        self._reached_dump_zone = False
-        self._dumped_box = False
+        self._pose_rewarder.reset()
         with physics.reset_context():
             for joint_name, joint_value in zip(EXCAVATOR_MAIN_JOINTS, EXCAVATOR_START_POSE):
                 physics.named.data.qpos[joint_name] = joint_value
@@ -384,6 +376,9 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         obs['qpos'] = self.get_qpos(physics)
         obs['qvel'] = self.get_qvel(physics)
         obs['env_state'] = self.get_env_state(physics)
+        obs['box_xyz'] = obs['env_state'][:3].copy()
+        obs['bucket_tip_xyz'] = physics.named.data.site_xpos["bucket_tip"].copy()
+        obs['dump_target_xyz'] = physics.named.data.site_xpos["dump_target"].copy()
         obs['images'] = dict()
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
@@ -391,102 +386,5 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         return obs
 
     def get_reward(self, physics):
-        all_contact_pairs = set()
-        for i_contact in range(physics.data.ncon):
-            id_geom_1 = physics.data.contact[i_contact].geom1
-            id_geom_2 = physics.data.contact[i_contact].geom2
-            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
-            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            all_contact_pairs.add((name_geom_1, name_geom_2))
-            all_contact_pairs.add((name_geom_2, name_geom_1))
-
-        box_geom = "red_box"
-        bucket_geom = "excavator_bucket"
-        tray_geom = "yellow_dump_tray"
-
-        touch_bucket_box = (bucket_geom, box_geom) in all_contact_pairs
-        touch_box_tray = (box_geom, tray_geom) in all_contact_pairs
-        touch_bucket_tray = (bucket_geom, tray_geom) in all_contact_pairs
-
-        box_state = self.get_env_state(physics)
-        _, box_y, box_z = box_state[:3]
-        swing_q = float(physics.named.data.qpos['j1_swing'])
-
-        reward = 0.0
-        if touch_bucket_box:
-            self._touched_box = True
-            reward = max(reward, 1.0)
-
-        # 载荷抬升判定：接触过目标后，方块高度显著抬升
-        if self._touched_box and box_z > 0.285:
-            self._loaded_box = True
-            reward = max(reward, 2.0)
-
-        # 卸料区判定：回转角进入卸料侧
-        if self._loaded_box and abs(swing_q) > 1.0:
-            self._reached_dump_zone = True
-            reward = max(reward, 2.8)
-
-        # 卸料动作到位：载荷后铲斗抵达卸料托盘区域
-        if self._reached_dump_zone and touch_bucket_tray:
-            reward = max(reward, 3.0)
-
-        # 卸料完成判定：方块进入托盘且与铲斗分离
-        if self._reached_dump_zone and touch_box_tray and (not touch_bucket_box) and box_z < 0.35:
-            self._dumped_box = True
-            reward = max(reward, 4.0)
-
-        # 对“只碰触未装载”的轨迹给低奖励，避免策略学成推箱子
-        if self._touched_box and (not self._loaded_box):
-            reward = max(reward, 1.2)
-
-        return reward
-
-# for test
-def get_action(master_bot_left, master_bot_right):
-    action = np.zeros(14)
-    # arm action
-    action[:6] = master_bot_left.dxl.joint_states.position[:6]
-    action[7:7+6] = master_bot_right.dxl.joint_states.position[:6]
-    # gripper action
-    left_gripper_pos = master_bot_left.dxl.joint_states.position[7]
-    right_gripper_pos = master_bot_right.dxl.joint_states.position[7]
-    normalized_left_pos = MASTER_GRIPPER_POSITION_NORMALIZE_FN(left_gripper_pos)
-    normalized_right_pos = MASTER_GRIPPER_POSITION_NORMALIZE_FN(right_gripper_pos)
-    action[6] = normalized_left_pos
-    action[7+6] = normalized_right_pos
-    return action
-
-def test_sim_teleop():
-    """ Testing teleoperation in sim with ALOHA. Requires hardware and ALOHA repo to work. """
-    from interbotix_xs_modules.arm import InterbotixManipulatorXS
-
-    BOX_POSE[0] = [0.2, 0.5, 0.05, 1, 0, 0, 0]
-
-    # source of data
-    master_bot_left = InterbotixManipulatorXS(robot_model="wx250s", group_name="arm", gripper_name="gripper",
-                                              robot_name=f'master_left', init_node=True)
-    master_bot_right = InterbotixManipulatorXS(robot_model="wx250s", group_name="arm", gripper_name="gripper",
-                                              robot_name=f'master_right', init_node=False)
-
-    # setup the environment
-    env = make_sim_env('sim_transfer_cube')
-    ts = env.reset()
-    episode = [ts]
-    # setup plotting
-    ax = plt.subplot()
-    plt_img = ax.imshow(ts.observation['images']['angle'])
-    plt.ion()
-
-    for t in range(1000):
-        action = get_action(master_bot_left, master_bot_right)
-        ts = env.step(action)
-        episode.append(ts)
-
-        plt_img.set_data(ts.observation['images']['angle'])
-        plt.pause(0.02)
-
-
-if __name__ == '__main__':
-    test_sim_teleop()
-
+        qpos = self.get_qpos(physics)
+        return float(self._pose_rewarder.step_reward(qpos))
