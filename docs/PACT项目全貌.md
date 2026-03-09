@@ -1,4 +1,4 @@
-# PACT 项目全貌文档
+﻿# PACT 项目全貌文档
 
 > **维护规则**：每次对 `PACT/` 下源码的修改（新增文件、删除文件、修改接口签名、变更数据流）都 **必须** 同步更新本文档对应章节。此规则已写入 `.cursor/rules/doc-sync.mdc`。
 
@@ -461,7 +461,7 @@ obs = {
 | `ee_sim_env.py` | mocap 控制 | `physics.data.mocap_pos[0]`, `physics.data.mocap_quat[0]` |
 | `ee_sim_env.py` | 站点查询 | `physics.named.data.site_xpos['tcp_center']`, `physics.named.data.site_xpos['bucket_tip']`, `physics.named.data.site_xpos['dump_target']` |
 | `ee_sim_env.py` | 四元数转换 | `mujoco.mju_mat2Quat(...)` |
-| `sim_backend.py` | MuJoCo 封装 | `make_sim_env(...)`, `env._physics.render(...)`, `BOX_POSE[...]` |
+| `simulation/backends/mujoco.py` | MuJoCo wrapper | `make_sim_env(...)`, `env._physics.render(...)`, bridge legacy `BOX_POSE` / `EXCAVATOR_BOX_POSE` |
 
 ---
 
@@ -538,9 +538,9 @@ python imitate_episodes.py ... --eval --num_rollouts 1
 | T4 | 无安全约束 | 中 | 无 Guard、无关节限位校验、无异常退让 |
 | T5 | 无状态接口层 | 中 | 策略直接读取原始 qpos，缺少结构化 S_t |
 | T6 | 评测体系简陋 | 中 | 仅有 success_rate，缺少平滑度、时长等工程指标 |
-| T7 | 模型可插拔能力有限 | 中 | 评测侧已通过后端接口解耦，但策略侧仍以 ACT/CNNMLP 为主，缺少统一 policy registry |
-| T8 | `utils.py` 中 `load_data` 签名不一致 | 低 | 文件中定义接受 6 参数，但 `imitate_episodes.py` 调用时传了更多 kwargs |
-| T9 | `BOX_POSE` 全局变量 | 低 | 跨模块通过全局列表传递方块位姿，容易出错 |
+| T7 | Learned policy extensibility | Medium | `PolicyRegistry` is already in place for scripted collection; remaining gap is a unified registry/plug-in path for learned policies beyond ACT/CNNMLP. |
+| T8 | `utils.py` `load_data` signature mismatch | Resolved (2026-03-09) | `load_data` now supports dataloader kwargs and `runners/train_runner.py` call sites are aligned; this item is no longer an active debt. |
+| T9 | Legacy global box pose bridge (`BOX_POSE` / `EXCAVATOR_BOX_POSE`) | Low | Scene pose is still bridged through legacy globals inside backend adapter code, which can be error-prone during refactors. |
 
 ---
 
@@ -628,3 +628,4 @@ io/hdf5_writer.py / io/stats.py → utils.py (dataset)
 - HDF5 字段名保持 `/observations/qpos`、`/observations/qvel`、`/observations/images/{cam}`、`/action` 不变
 - `state_dim` 由 `equipment_model` 唯一确定
 - 归一化参数存储在 `dataset_stats.pkl`，与 checkpoint 放在同一 `ckpt_dir`
+
