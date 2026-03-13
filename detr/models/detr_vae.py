@@ -235,8 +235,7 @@ def build(args):
     elif 'excavator_simple' in equipment_model:
         state_dim = 4
     else:
-        state_dim = 7
-
+        state_dim = 10
     # From state
     # backbone = None # from state for now, no need for conv nets
     # From image

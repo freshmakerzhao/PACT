@@ -166,6 +166,7 @@ def main(args):
         data_dict = {
             '/observations/qpos': [],
             '/observations/qvel': [],
+            '/observations/env_state': [], # 存储目标XYZ
             '/action': [],
         }
         for cam_name in camera_names:
@@ -184,6 +185,7 @@ def main(args):
             ts = episode_replay.pop(0)
             data_dict['/observations/qpos'].append(ts.observation['qpos'])
             data_dict['/observations/qvel'].append(ts.observation['qvel'])
+            data_dict['/observations/env_state'].append(ts.observation['env_state'][:3])
             data_dict['/action'].append(action)
             for cam_name in camera_names:
                 data_dict[f'/observations/images/{cam_name}'].append(ts.observation['images'][cam_name])
@@ -202,6 +204,7 @@ def main(args):
             # compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)
             qpos = obs.create_dataset('qpos', (max_timesteps, state_dim))
             qvel = obs.create_dataset('qvel', (max_timesteps, state_dim))
+            env_state_ds = obs.create_dataset('env_state', (max_timesteps, 3))
             action = root.create_dataset('action', (max_timesteps, state_dim))
 
             for name, array in data_dict.items():

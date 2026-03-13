@@ -59,7 +59,7 @@ def main(args):
     elif 'excavator_simple' in equipment_model:
         state_dim = 4
     else:
-        state_dim = 7
+        state_dim = 10
 
     lr_backbone = 1e-5
     backbone = 'resnet18'
@@ -230,7 +230,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         stats = pickle.load(f)
 
     pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
-    post_process = lambda a: a * stats['action_std'] + stats['action_mean']
+    post_process = lambda a: a * stats['delta_action_std'] + stats['delta_action_mean']
 
     # load environment
     if real_robot:
@@ -309,7 +309,10 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                     policy_images = {'main': apply_eval_noise(obs['image'], eval_noise_type, eval_noise_level)}
                     image_list.append(policy_images)
                 qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
+                env_state_numpy = np.array(obs['env_state'])[:3] # === 实时提取目标 XYZ
+                
+                qpos_10d_numpy = np.concatenate([qpos_numpy, env_state_numpy])
+                qpos = pre_process(qpos_10d_numpy) 
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
                 curr_image = get_image(policy_images, camera_names)
@@ -317,29 +320,49 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 ### query policy
                 if config['policy_class'] == "ACT":
                     if t % query_frequency == 0:
+                        # 此时的 all_actions 是归一化后的相对动作
                         all_actions = policy(qpos, curr_image)
+                        
+                        # 将模型输出的一整块 relative 动作转回 absolute 动作
+                        all_actions_numpy = all_actions.squeeze(0).cpu().numpy()
+                        # 1. 逆归一化
+                        delta_actions_numpy = post_process(all_actions_numpy) 
+                        
+                        # 2. 转换回绝对坐标 
+                        if t == 0:
+                            anchor_qpos = qpos_numpy[:6] # 第一步用真实观测
+                        else:
+                            # 用上一次下发的理想指令作为基准，防止物理惯性导致的拖拽
+                            anchor_qpos = target_qpos_list[-1][:6]
+                            
+                        absolute_actions_numpy = np.zeros_like(delta_actions_numpy)
+                        absolute_actions_numpy[:, :6] = delta_actions_numpy[:, :6] + anchor_qpos
+                        absolute_actions_numpy[:, 6] = delta_actions_numpy[:, 6] # 夹爪保持绝对
+                        
+                        # 3. 转回 Tensor 供后续计算
+                        absolute_actions = torch.from_numpy(absolute_actions_numpy).float().cuda().unsqueeze(0)
+
                     if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
+                        all_time_actions[[t], t:t+num_queries] = absolute_actions
+                        
+                        # 废弃原生 ACT 会删掉 0.0 夹爪的 Bug，用精确的切片取代
+                        start_idx = max(0, t - num_queries + 1)
+                        actions_for_curr_step = all_time_actions[start_idx : t+1, t]
+                        
+                        k = 0.1 # 原始是0.01，增加后续动作的权重，类似于时间衰减加权平均
                         exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
                         exp_weights = exp_weights / exp_weights.sum()
                         exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
                         raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
                     else:
-                        raw_action = all_actions[:, t % query_frequency]
+                        raw_action = absolute_actions[:, t % query_frequency]
                 elif config['policy_class'] == "CNNMLP":
                     raw_action = policy(qpos, curr_image)
                 else:
                     raise NotImplementedError
 
                 ### post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                target_qpos = action
-
+                target_qpos = raw_action.squeeze(0).cpu().numpy()[:7]
                 ### step the environment
                 ts = env.step(target_qpos)
 

@@ -2,7 +2,7 @@ import pathlib
 import numpy as np
 
 ### Task parameters
-DATA_DIR = '/home/zhaoshuai/workspace_act/act/data_sim_episodes/fairino5_single_260309' # absolute path
+DATA_DIR = '/home/zhaoshuai/workspace_act/act/data_sim_episodes/fairino5_single_260313_100' # absolute path
 SIM_TASK_CONFIGS = {
     # vx300s_bimanual搬方块任务
     'sim_transfer_cube_scripted':{
@@ -37,7 +37,7 @@ SIM_TASK_CONFIGS = {
     # 'camera_names': ['top', 'angle', 'right_pillar']
     'sim_lifting_cube_scripted':{
         'dataset_dir': DATA_DIR + '/sim_lifting_cube_scripted',
-        'num_episodes': 50,
+        'num_episodes': 100, # 根据情况修改
         'episode_len': 400,
         'camera_names': ['top']
     },
