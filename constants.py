@@ -2,7 +2,7 @@ import pathlib
 import numpy as np
 
 ### Task parameters
-DATA_DIR = '/home/zhaoshuai/workspace_act/act/data_sim_episodes/fairino5_single_260309' # absolute path
+DATA_DIR = '/home/zhaoshuai/workspace_act/PACT/data_sim_episodes/26032502_fairino5_single_act_origin' # absolute path
 SIM_TASK_CONFIGS = {
     # vx300s_bimanual搬方块任务
     'sim_transfer_cube_scripted':{
