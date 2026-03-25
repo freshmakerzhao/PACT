@@ -71,12 +71,6 @@ def get_args_parser():
     parser.add_argument('--clear_videos_before_eval', action='store_true',
                         help='delete existing video*.mp4 in ckpt_dir before eval (default: disabled)')
 
-    # eval时对图像输入添加的噪声类型和强度，默认不添加噪声
-    parser.add_argument('--eval_noise_type', action='store', type=str, default='none',
-                        choices=['none', 'gaussian', 'fog', 'occlusion'],
-                        help='noise type applied to eval image input only')
-    parser.add_argument('--eval_noise_level', action='store', type=float, default=0.0,
-                        help='noise intensity for eval image input')
     return parser
 
 
