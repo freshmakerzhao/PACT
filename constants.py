@@ -1,8 +1,68 @@
 import pathlib
 import numpy as np
+import yaml
+import os
+
+def load_config(config_path):
+    """从YAML文件加载配置"""
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+            print(f"[DEBUG] 成功加载配置文件: {config_path}")
+            print(f"[DEBUG] 配置内容: {config}")
+            return config
+    else:
+        print(f"[ERROR] 配置文件不存在: {config_path}")
+        return {}
+
+def get_task_config(config_path):
+    """从YAML配置获取任务配置"""
+    config = load_config(config_path)
+    if config and 'task' in config:
+        task_config = config['task']
+        return {
+            'dataset_dir': task_config.get('dataset_dir', ''),
+            'num_episodes': task_config.get('num_episodes', 50),
+            'episode_len': task_config.get('episode_len', 400),
+            'camera_names': task_config.get('camera_names', ['top'])
+        }
+    return None
+
+def get_equipment_model(config_path):
+    """从YAML配置获取设备型号"""
+    config = load_config(config_path)
+    if config and 'equipment' in config:
+        return config['equipment'].get('model', 'vx300s_bimanual')
+    return 'vx300s_bimanual'
+
+def get_training_config(config_path):
+    """从YAML配置获取训练配置"""
+    config = load_config(config_path)
+    if config:
+        training = config.get('training', {})
+        act = config.get('act', {})
+        output = config.get('output', {})
+        eval_config = config.get('eval', {})
+        
+        return {
+            'policy_class': training.get('policy_class', 'ACT'),
+            'batch_size': training.get('batch_size', 32),
+            'num_epochs': training.get('num_epochs', 2000),
+            'lr': training.get('lr', 1e-5),
+            'seed': training.get('seed', 1000),
+            'temporal_agg': training.get('temporal_agg', False),
+            'kl_weight': act.get('kl_weight', 10),
+            'chunk_size': act.get('chunk_size', 100),
+            'hidden_dim': act.get('hidden_dim', 512),
+            'dim_feedforward': act.get('dim_feedforward', 3200),
+            'ckpt_dir': output.get('ckpt_dir', './ckpts'),
+            'eval': eval_config.get('enabled', False),
+            'clear_videos_before_eval': eval_config.get('clear_videos_before_eval', True),
+        }
+    return {}
 
 ### Task parameters
-DATA_DIR = '/home/zhaoshuai/workspace_act/act/data_sim_episodes/fairino5_single_260309' # absolute path
+DATA_DIR = '/home/zhaoshuai/workspace_act/PACT/data_sim_episodes/26032502_fairino5_single_act_origin' # absolute path
 SIM_TASK_CONFIGS = {
     # vx300s_bimanual搬方块任务
     'sim_transfer_cube_scripted':{
@@ -42,6 +102,14 @@ SIM_TASK_CONFIGS = {
         'camera_names': ['top']
     },
 }
+
+def get_sim_task_config(task_name, config_path):
+    """获取任务配置，优先从YAML文件加载"""
+    yaml_config = get_task_config(config_path)
+    if yaml_config:
+        return yaml_config
+    # 如果YAML配置不存在，使用默认配置
+    return SIM_TASK_CONFIGS.get(task_name, SIM_TASK_CONFIGS['sim_lifting_cube_scripted'])
 
 ### Simulation envs fixed constants
 DT = 0.02

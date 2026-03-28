@@ -5,7 +5,7 @@ import argparse
 import matplotlib.pyplot as plt
 import h5py
 
-from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS
+from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS, load_config, get_equipment_model, get_sim_task_config
 from ee_sim_env import make_ee_sim_env
 from sim_env import make_sim_env, BOX_POSE
 from scripted_policy import PickAndTransferPolicy, InsertionPolicy, LiftingAndMovingPolicy, ExcavatorMocapLiftingPolicy
@@ -23,11 +23,20 @@ def main(args):
     4) 保存为一条 episode 数据并继续下一条。
     """
 
-    task_name = args['task_name']
-    dataset_dir = args['dataset_dir']
-    num_episodes = args['num_episodes']
-    onscreen_render = args['onscreen_render']
-    equipment_model = args['equipment_model'] if "equipment_model" in args else 'vx300s_bimanual'
+    # 必须指定配置文件路径
+    config_path = args.get('config')
+    if not config_path:
+        raise ValueError("必须通过 --config 参数指定配置文件路径")
+    
+    # 加载YAML配置
+    yaml_config = load_config(config_path)
+    
+    # 只从配置文件读取参数
+    task_name = yaml_config.get('task', {}).get('name', 'sim_lifting_cube_scripted')
+    dataset_dir = yaml_config.get('task', {}).get('dataset_dir', './data_sim_episodes')
+    num_episodes = yaml_config.get('task', {}).get('num_episodes', 50)
+    onscreen_render = yaml_config.get('render', {}).get('onscreen_render', False)
+    equipment_model = get_equipment_model(config_path)
     inject_noise = False
     render_cam_name = 'angle'
     arm_nums = 2 # 默认双臂任务，特殊型号或任务时修改
@@ -37,8 +46,9 @@ def main(args):
         os.makedirs(dataset_dir, exist_ok=True)
 
     # 从任务配置中读取 episode 长度与相机名称
-    episode_len = SIM_TASK_CONFIGS[task_name]['episode_len']
-    camera_names = SIM_TASK_CONFIGS[task_name]['camera_names']
+    task_config = get_sim_task_config(task_name, config_path)
+    episode_len = task_config['episode_len']
+    camera_names = task_config['camera_names']
     if task_name == 'sim_transfer_cube_scripted':
         policy_cls = PickAndTransferPolicy
     elif task_name == 'sim_insertion_scripted':
@@ -166,6 +176,7 @@ def main(args):
         data_dict = {
             '/observations/qpos': [],
             '/observations/qvel': [],
+            '/observations/env_state': [], # 存储目标XYZ
             '/action': [],
         }
         for cam_name in camera_names:
@@ -184,6 +195,7 @@ def main(args):
             ts = episode_replay.pop(0)
             data_dict['/observations/qpos'].append(ts.observation['qpos'])
             data_dict['/observations/qvel'].append(ts.observation['qvel'])
+            data_dict['/observations/env_state'].append(ts.observation['env_state'][:3])
             data_dict['/action'].append(action)
             for cam_name in camera_names:
                 data_dict[f'/observations/images/{cam_name}'].append(ts.observation['images'][cam_name])
@@ -202,6 +214,7 @@ def main(args):
             # compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)
             qpos = obs.create_dataset('qpos', (max_timesteps, state_dim))
             qvel = obs.create_dataset('qvel', (max_timesteps, state_dim))
+            env_state_ds = obs.create_dataset('env_state', (max_timesteps, 3))
             action = root.create_dataset('action', (max_timesteps, state_dim))
 
             for name, array in data_dict.items():
@@ -212,13 +225,10 @@ def main(args):
     print(f'Success: {np.sum(success)} / {len(success)}')
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--dataset_dir', action='store', type=str, help='dataset saving dir', required=True)
-    parser.add_argument('--num_episodes', action='store', type=int, help='num_episodes', required=False)
-    parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--equipment_model', action='store', type=str, default='vx300s_bimanual',
-                        help='equipment model folder under assets (e.g., vx300s_bimanual)')
+    parser = argparse.ArgumentParser(description='轨迹录制脚本，只能通过YAML配置文件加载配置')
+    parser.add_argument('--config', type=str, required=True, help='配置文件路径 (必须指定，如 configs/fairino5_single/01_record.yaml)')
     
-    main(vars(parser.parse_args()))
+    args = parser.parse_args()
+    
+    main(vars(args))
 

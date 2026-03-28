@@ -55,11 +55,11 @@ def get_args_parser():
     # repeat args in imitate_episodes just to avoid error. Will not be used
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
+    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=False)
+    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=False)
+    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=False)
+    parser.add_argument('--seed', action='store', type=int, help='seed', required=False)
+    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=False)
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
@@ -71,12 +71,7 @@ def get_args_parser():
     parser.add_argument('--clear_videos_before_eval', action='store_true',
                         help='delete existing video*.mp4 in ckpt_dir before eval (default: disabled)')
 
-    # eval时对图像输入添加的噪声类型和强度，默认不添加噪声
-    parser.add_argument('--eval_noise_type', action='store', type=str, default='none',
-                        choices=['none', 'gaussian', 'fog', 'occlusion'],
-                        help='noise type applied to eval image input only')
-    parser.add_argument('--eval_noise_level', action='store', type=float, default=0.0,
-                        help='noise intensity for eval image input')
+    parser.add_argument('--config', action='store', type=str, help='Path to the YAML config file', required=False)
     return parser
 
 

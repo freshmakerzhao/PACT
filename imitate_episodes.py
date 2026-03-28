@@ -11,8 +11,7 @@ from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
 
-from constants import DT
-from constants import PUPPET_GRIPPER_JOINT_OPEN
+from constants import DT, PUPPET_GRIPPER_JOINT_OPEN, load_config, get_training_config, get_equipment_model, get_sim_task_config
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
@@ -26,26 +25,35 @@ e = IPython.embed
 
 def main(args):
     set_seed(1)
-    # command line parameters
-    is_eval = args['eval']
-    ckpt_dir = args['ckpt_dir']
-    policy_class = args['policy_class']
-    onscreen_render = args['onscreen_render']
-    task_name = args['task_name']
-    batch_size_train = args['batch_size']
-    batch_size_val = args['batch_size']
-    num_epochs = args['num_epochs']
-    clear_videos_before_eval = args['clear_videos_before_eval']
-    eval_noise_type = args['eval_noise_type']
-    eval_noise_level = args['eval_noise_level']
-    equipment_model = args['equipment_model'] if "equipment_model" in args else 'vx300s_bimanual'
-
+    
+    # 必须指定配置文件路径
+    config_path = args.get('config')
+    if not config_path:
+        raise ValueError("必须通过 --config 参数指定配置文件路径")
+    
+    # 加载YAML配置
+    yaml_config = load_config(config_path)
+    training_config = get_training_config(config_path)
+    
+    # 只从配置文件读取参数
+    task_name = yaml_config.get('task', {}).get('name', 'sim_lifting_cube_scripted')
+    is_eval = training_config.get('eval', False)
+    ckpt_dir = training_config.get('ckpt_dir', './ckpts')
+    policy_class = training_config.get('policy_class', 'ACT')
+    onscreen_render = training_config.get('onscreen_render', False)
+    batch_size_train = training_config.get('batch_size', 32)
+    batch_size_val = training_config.get('batch_size', 32)
+    num_epochs = training_config.get('num_epochs', 2000)
+    clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 默认清除
+    equipment_model = get_equipment_model(config_path)
+    seed = training_config.get('seed', 1000)
+    lr = float(training_config.get('lr', 1e-5))
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
-        from constants import SIM_TASK_CONFIGS
-        task_config = SIM_TASK_CONFIGS[task_name]
+        task_config = get_sim_task_config(task_name, config_path)
     else:
+        # deploy
         from aloha_scripts.constants import TASK_CONFIGS
         task_config = TASK_CONFIGS[task_name]
     dataset_dir = task_config['dataset_dir']
@@ -59,7 +67,7 @@ def main(args):
     elif 'excavator_simple' in equipment_model:
         state_dim = 4
     else:
-        state_dim = 7
+        state_dim = 10
 
     lr_backbone = 1e-5
     backbone = 'resnet18'
@@ -67,20 +75,21 @@ def main(args):
         enc_layers = 4
         dec_layers = 7
         nheads = 8
-        policy_config = {'lr': args['lr'],
-                         'num_queries': args['chunk_size'],
-                         'kl_weight': args['kl_weight'],
-                         'hidden_dim': args['hidden_dim'],
-                         'dim_feedforward': args['dim_feedforward'],
+        policy_config = {'lr': lr,
+                         'num_queries': training_config.get('chunk_size', 100),
+                         'kl_weight': training_config.get('kl_weight', 10),
+                         'hidden_dim': training_config.get('hidden_dim', 512),
+                         'dim_feedforward': training_config.get('dim_feedforward', 3200),
                          'lr_backbone': lr_backbone,
                          'backbone': backbone,
                          'enc_layers': enc_layers,
                          'dec_layers': dec_layers,
                          'nheads': nheads,
                          'camera_names': camera_names,
+                         'equipment_model': equipment_model,
                          }
     elif policy_class == 'CNNMLP':
-        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
+        policy_config = {'lr': lr, 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
                          'camera_names': camera_names,}
     else:
         raise NotImplementedError
@@ -90,19 +99,16 @@ def main(args):
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
-        'lr': args['lr'],
+        'lr': lr,
         'policy_class': policy_class,
         'onscreen_render': onscreen_render,
         'policy_config': policy_config,
         'task_name': task_name,
-        'seed': args['seed'],
-        'temporal_agg': args['temporal_agg'],
+        'seed': seed,
+        'temporal_agg': training_config.get('temporal_agg', False),
         'camera_names': camera_names,
         'real_robot': not is_sim,
-        'eval_noise_type': eval_noise_type,
-        'eval_noise_level': eval_noise_level,
     }
-
     if is_eval:
         if clear_videos_before_eval:
             clear_eval_videos(ckpt_dir)
@@ -155,39 +161,10 @@ def make_optimizer(policy_class, policy):
     return optimizer
 
 
-def apply_eval_noise(image, noise_type, noise_level):
-    if noise_type == 'none' or noise_level <= 0:
-        return image
-
-    image_float = image.astype(np.float32)
-    height, width, _ = image.shape
-
-    if noise_type == 'gaussian':
-        sigma = noise_level * 255.0
-        noise = np.random.normal(0.0, sigma, image_float.shape).astype(np.float32)
-        image_float = image_float + noise
-    elif noise_type == 'fog':
-        alpha = float(np.clip(noise_level, 0.0, 1.0))
-        image_float = image_float * (1.0 - alpha) + 255.0 * alpha
-    elif noise_type == 'occlusion':
-        area_ratio = float(np.clip(noise_level, 0.0, 0.9))
-        occ_area = int(height * width * area_ratio)
-        occ_side = max(1, int(np.sqrt(occ_area)))
-        occ_h = min(height, occ_side)
-        occ_w = min(width, occ_side)
-        y0 = np.random.randint(0, height - occ_h + 1)
-        x0 = np.random.randint(0, width - occ_w + 1)
-        image_float[y0:y0 + occ_h, x0:x0 + occ_w, :] = 127.0
-    else:
-        raise ValueError(f'Unsupported eval noise type: {noise_type}')
-
-    return np.clip(image_float, 0, 255).astype(np.uint8)
-
-
-def get_image(image_dict, camera_names):
+def get_image(ts, camera_names):
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(image_dict[cam_name], 'h w c -> c h w')
+        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
     curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
@@ -213,8 +190,6 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     max_timesteps = config['episode_len']
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
-    eval_noise_type = config.get('eval_noise_type', 'none')
-    eval_noise_level = float(config.get('eval_noise_level', 0.0))
     onscreen_cam = 'angle'
 
     # load policy and stats
@@ -230,7 +205,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         stats = pickle.load(f)
 
     pre_process = lambda s_qpos: (s_qpos - stats['qpos_mean']) / stats['qpos_std']
-    post_process = lambda a: a * stats['action_std'] + stats['action_mean']
+    post_process = lambda a: a * stats['delta_action_std'] + stats['delta_action_mean']
 
     # load environment
     if real_robot:
@@ -268,7 +243,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 BOX_POSE[0] = sample_box_pose_eval()
         else:
             raise NotImplementedError
-        init_pose = np.asarray(BOX_POSE[0], dtype=np.float64).copy()
+        init_pose = np.asarray(BOX_POSE[0], dtype=np.float64).copy() # for logging only, real reset is done in env.reset() which reads BOX_POSE[0]
         ts = env.reset()
 
         ### onscreen render
@@ -297,49 +272,64 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 ### process previous timestep to get qpos and image_list
                 obs = ts.observation
                 if 'images' in obs:
-                    video_images = {}
-                    for cam_name, cam_image in obs['images'].items():
-                        video_images[cam_name] = apply_eval_noise(cam_image, eval_noise_type, eval_noise_level)
-                    image_list.append(video_images)
-
-                    policy_images = {}
-                    for cam_name in camera_names:
-                        policy_images[cam_name] = video_images[cam_name]
+                    image_list.append(obs['images'])
                 else:
-                    policy_images = {'main': apply_eval_noise(obs['image'], eval_noise_type, eval_noise_level)}
-                    image_list.append(policy_images)
+                    image_list.append({'main': obs['image']})
                 qpos_numpy = np.array(obs['qpos'])
-                qpos = pre_process(qpos_numpy)
+                env_state_numpy = np.array(obs['env_state'])[:3] # === 实时提取目标 XYZ
+                
+                qpos_10d_numpy = np.concatenate([qpos_numpy, env_state_numpy])
+                qpos = pre_process(qpos_10d_numpy) 
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
-                curr_image = get_image(policy_images, camera_names)
+                curr_image = get_image(ts, camera_names)
 
                 ### query policy
                 if config['policy_class'] == "ACT":
                     if t % query_frequency == 0:
+                        # 此时的 all_actions 是归一化后的相对动作
                         all_actions = policy(qpos, curr_image)
+                        
+                        # 将模型输出的一整块 relative 动作转回 absolute 动作
+                        all_actions_numpy = all_actions.squeeze(0).cpu().numpy()
+                        # 1. 逆归一化
+                        delta_actions_numpy = post_process(all_actions_numpy) 
+                        
+                        # 2. 转换回绝对坐标 
+                        if t == 0:
+                            anchor_qpos = qpos_numpy[:6] # 第一步用真实观测
+                        else:
+                            # 用上一次下发的理想指令作为基准，防止物理惯性导致的拖拽
+                            anchor_qpos = target_qpos_list[-1][:6]
+                            
+                        absolute_actions_numpy = np.zeros_like(delta_actions_numpy)
+                        absolute_actions_numpy[:, :6] = delta_actions_numpy[:, :6] + anchor_qpos
+                        absolute_actions_numpy[:, 6] = delta_actions_numpy[:, 6] # 夹爪保持绝对
+                        
+                        # 3. 转回 Tensor 供后续计算
+                        absolute_actions = torch.from_numpy(absolute_actions_numpy).float().cuda().unsqueeze(0)
+
                     if temporal_agg:
-                        all_time_actions[[t], t:t+num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
+                        all_time_actions[[t], t:t+num_queries] = absolute_actions
+                        
+                        # 废弃原生 ACT 会删掉 0.0 夹爪的 Bug，用精确的切片取代
+                        start_idx = max(0, t - num_queries + 1)
+                        actions_for_curr_step = all_time_actions[start_idx : t+1, t]
+                        
+                        k = 0.1 # 原始是0.01，增加后续动作的权重，类似于时间衰减加权平均
                         exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
                         exp_weights = exp_weights / exp_weights.sum()
                         exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
                         raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
                     else:
-                        raw_action = all_actions[:, t % query_frequency]
+                        raw_action = absolute_actions[:, t % query_frequency]
                 elif config['policy_class'] == "CNNMLP":
                     raw_action = policy(qpos, curr_image)
                 else:
                     raise NotImplementedError
 
                 ### post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                target_qpos = action
-
+                target_qpos = raw_action.squeeze(0).cpu().numpy()[:7]
                 ### step the environment
                 ts = env.step(target_qpos)
 
@@ -378,8 +368,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
 
         if save_episode:
-            success_tag = 'succ' if success == 1 else 'fail'
-            video_name = f'video{rollout_id}_{success_tag}_r{int(episode_highest_reward)}_ret{episode_return:.2f}.mp4'
+            success_tag = 'Success' if success == 1 else 'Failure'
+            video_name = f'video{rollout_id}_r{int(episode_highest_reward)}_ret{episode_return:.2f}_{success_tag}.mp4'
             save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, video_name))
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
@@ -525,32 +515,9 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--clear_videos_before_eval', action='store_true',
-                        help='delete existing video*.mp4 in ckpt_dir before eval (default: disabled)')
-    parser.add_argument('--eval_noise_type', action='store', type=str, default='none',
-                        choices=['none', 'gaussian', 'fog', 'occlusion'],
-                        help='noise type applied to eval image input only')
-    parser.add_argument('--eval_noise_level', action='store', type=float, default=0.0,
-                        help='noise intensity for eval image input')
-    parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
-    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
-    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
-
-    # for ACT
-    parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
-    parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
-    parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
-    parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
-    parser.add_argument('--temporal_agg', action='store_true')
-
-    # 设备型号
-    parser.add_argument('--equipment_model', action='store', type=str, default='vx300s_bimanual',
-                        help='equipment model folder under assets (e.g., vx300s_bimanual)')
-    main(vars(parser.parse_args()))
+    parser = argparse.ArgumentParser(description='ACT训练和评估脚本')
+    parser.add_argument('--config', type=str, required=True, help='配置文件路径 (必须指定，如 configs/fairino5_single/02_train.yaml 或 configs/fairino5_single/03_eval.yaml)')
+    
+    args = parser.parse_args()
+    
+    main(vars(args))

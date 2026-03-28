@@ -1,23 +1,23 @@
 # 生成轨迹
 python3 record_sim_episodes.py \
---task_name sim_transfer_cube_scripted \
---dataset_dir ./data_sim_episodes/sim_transfer_cube_scripted \
---num_episodes 50
+--task_name sim_lifting_cube_scripted \
+--dataset_dir ./data_sim_episodes/26032501_fairino5_single/sim_lifting_cube_scripted \
+--num_episodes 50 --equipment_model fairino5_single
 
 # 训练
 python3 imitate_episodes.py \
     --task_name sim_lifting_cube_scripted \
-    --ckpt_dir ./ckpts/sim_lifting_cube_scripted \
+    --ckpt_dir ./ckpts/26032501_fairino5_single/sim_lifting_cube_scripted \
     --policy_class ACT \
     --kl_weight 10 \
     --chunk_size 100 \
     --hidden_dim 512 \
-    --batch_size 8 \
+    --batch_size 32 \
     --dim_feedforward 3200 \
     --num_epochs 2000 \
     --lr 1e-5 \
-    --seed 2603 \
-    --equipment_model fairino5_single \
+    --seed 1000 \
+    --equipment_model fairino5_single
 
 
 # eval
