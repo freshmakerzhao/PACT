@@ -11,8 +11,7 @@ from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
 
-from constants import DT
-from constants import PUPPET_GRIPPER_JOINT_OPEN
+from constants import DT, PUPPET_GRIPPER_JOINT_OPEN, load_config, get_training_config, get_equipment_model, get_sim_task_config
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
@@ -26,24 +25,35 @@ e = IPython.embed
 
 def main(args):
     set_seed(1)
-    # command line parameters
-    is_eval = args['eval']
-    ckpt_dir = args['ckpt_dir']
-    policy_class = args['policy_class']
-    onscreen_render = args['onscreen_render']
-    task_name = args['task_name']
-    batch_size_train = args['batch_size']
-    batch_size_val = args['batch_size']
-    num_epochs = args['num_epochs']
-    clear_videos_before_eval = args['clear_videos_before_eval']
-    equipment_model = args['equipment_model'] if "equipment_model" in args else 'vx300s_bimanual'
-
+    
+    # 必须指定配置文件路径
+    config_path = args.get('config')
+    if not config_path:
+        raise ValueError("必须通过 --config 参数指定配置文件路径")
+    
+    # 加载YAML配置
+    yaml_config = load_config(config_path)
+    training_config = get_training_config(config_path)
+    
+    # 只从配置文件读取参数
+    task_name = yaml_config.get('task', {}).get('name', 'sim_lifting_cube_scripted')
+    is_eval = training_config.get('eval', False)
+    ckpt_dir = training_config.get('ckpt_dir', './ckpts')
+    policy_class = training_config.get('policy_class', 'ACT')
+    onscreen_render = training_config.get('onscreen_render', False)
+    batch_size_train = training_config.get('batch_size', 32)
+    batch_size_val = training_config.get('batch_size', 32)
+    num_epochs = training_config.get('num_epochs', 2000)
+    clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 默认清除
+    equipment_model = get_equipment_model(config_path)
+    seed = training_config.get('seed', 1000)
+    lr = float(training_config.get('lr', 1e-5))
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
-        from constants import SIM_TASK_CONFIGS
-        task_config = SIM_TASK_CONFIGS[task_name]
+        task_config = get_sim_task_config(task_name, config_path)
     else:
+        # deploy
         from aloha_scripts.constants import TASK_CONFIGS
         task_config = TASK_CONFIGS[task_name]
     dataset_dir = task_config['dataset_dir']
@@ -65,20 +75,21 @@ def main(args):
         enc_layers = 4
         dec_layers = 7
         nheads = 8
-        policy_config = {'lr': args['lr'],
-                         'num_queries': args['chunk_size'],
-                         'kl_weight': args['kl_weight'],
-                         'hidden_dim': args['hidden_dim'],
-                         'dim_feedforward': args['dim_feedforward'],
+        policy_config = {'lr': lr,
+                         'num_queries': training_config.get('chunk_size', 100),
+                         'kl_weight': training_config.get('kl_weight', 10),
+                         'hidden_dim': training_config.get('hidden_dim', 512),
+                         'dim_feedforward': training_config.get('dim_feedforward', 3200),
                          'lr_backbone': lr_backbone,
                          'backbone': backbone,
                          'enc_layers': enc_layers,
                          'dec_layers': dec_layers,
                          'nheads': nheads,
                          'camera_names': camera_names,
+                         'equipment_model': equipment_model,
                          }
     elif policy_class == 'CNNMLP':
-        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
+        policy_config = {'lr': lr, 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
                          'camera_names': camera_names,}
     else:
         raise NotImplementedError
@@ -88,17 +99,16 @@ def main(args):
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
-        'lr': args['lr'],
+        'lr': lr,
         'policy_class': policy_class,
         'onscreen_render': onscreen_render,
         'policy_config': policy_config,
         'task_name': task_name,
-        'seed': args['seed'],
-        'temporal_agg': args['temporal_agg'],
+        'seed': seed,
+        'temporal_agg': training_config.get('temporal_agg', False),
         'camera_names': camera_names,
         'real_robot': not is_sim,
     }
-
     if is_eval:
         if clear_videos_before_eval:
             clear_eval_videos(ckpt_dir)
@@ -505,27 +515,9 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--clear_videos_before_eval', action='store_true',
-                        help='delete existing video*.mp4 in ckpt_dir before eval (default: disabled)')
-    parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
-    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
-    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
-
-    # for ACT
-    parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
-    parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
-    parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
-    parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
-    parser.add_argument('--temporal_agg', action='store_true')
-
-    # 设备型号
-    parser.add_argument('--equipment_model', action='store', type=str, default='vx300s_bimanual',
-                        help='equipment model folder under assets (e.g., vx300s_bimanual)')
-    main(vars(parser.parse_args()))
+    parser = argparse.ArgumentParser(description='ACT训练和评估脚本')
+    parser.add_argument('--config', type=str, required=True, help='配置文件路径 (必须指定，如 configs/fairino5_single/02_train.yaml 或 configs/fairino5_single/03_eval.yaml)')
+    
+    args = parser.parse_args()
+    
+    main(vars(args))
